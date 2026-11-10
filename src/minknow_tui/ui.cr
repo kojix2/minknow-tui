@@ -7,12 +7,19 @@ module MinknowTui
   alias CW = Crysterm::Widgets
 
   class Picker < CT::Widget::Dialog
+    class ChoiceList < CW::List
+      # Crysterm's default cancellation also activates the highlighted item.
+      def cancel_current : Nil
+        parent.as(Picker).reject
+      end
+    end
+
     getter! list : CW::List
 
     def initialize(window : CT::Window, title : String, items : Array(String), &selected : Int32 ->)
       super(parent: window, width: "90%", height: "75%", parse_tags: false)
       self.label = title
-      @list = CW::List.new(parent: self, width: "100%", height: "100%", items: items, keys: true, vi_keys: true, parse_tags: false)
+      @list = ChoiceList.new(parent: self, width: "100%", height: "100%", items: items, keys: true, vi_keys: true, parse_tags: false)
       list.on(CT::Event::ItemActivated) do |event|
         selected.call(event.index)
         accept
@@ -78,6 +85,7 @@ module MinknowTui
     @event_keys = [] of String
     @refreshing = false
     @last_chart_signature = ""
+    @last_view : Tuple(UInt64, Int32)?
 
     def initialize(@store : Store, window : CT::Window? = nil)
       @window = window || CT::Window.new(title: "minknow-tui", default_quit_keys: false,
@@ -102,9 +110,11 @@ module MinknowTui
       @overview = CW::ScrollableText.new(keys: true, vi_keys: true, parse_tags: false)
       @tabs.add_tab "Overview", @overview
 
+      # Keep iTerm2 plots in the cell buffer so image layers cannot outlive a view.
+      graph_type = CW::Media::Type::Glyph if @window.tput.emulator.iterm2? && CT::Config.media_backend.auto?
       yield_page = CW::Box.new(layout: CT::Layout::Dock.new)
       @yield_text = CW::ScrollableText.new(parent: yield_page, height: 7, layout_hint: :top, keys: true, parse_tags: false)
-      @yield_chart = CW::GraphLineChart.new(parent: yield_page, title: "Yield (bases)", layout_hint: :center)
+      @yield_chart = CW::GraphLineChart.new(parent: yield_page, title: "Yield (bases)", type: graph_type, layout_hint: :center)
       @yield_chart.axis_x.title = "Acquisition seconds"
       @yield_chart.axis_y.title = "Bases"
       @yield_chart.axis_x.label_format = "%.0f"
@@ -119,7 +129,7 @@ module MinknowTui
 
       device_page = CW::Box.new(layout: CT::Layout::Dock.new)
       @device_text = CW::ScrollableText.new(parent: device_page, height: 12, layout_hint: :top, keys: true, vi_keys: true, parse_tags: false)
-      @temperature_chart = CW::GraphLineChart.new(parent: device_page, title: "Temperature history", layout_hint: :center)
+      @temperature_chart = CW::GraphLineChart.new(parent: device_page, title: "Temperature history", type: graph_type, layout_hint: :center)
       @temperature_chart.axis_x.title = "Acquisition seconds"
       @temperature_chart.axis_y.title = "°C"
       @temperature_chart.axis_x.label_format = "%.0f"
@@ -149,7 +159,11 @@ module MinknowTui
           refresh
         end
       end
-      @tabs.on(CT::Event::CurrentChanged) { |event| @store.tab = event.index; @store.changed }
+      @tabs.on(CT::Event::CurrentChanged) do |event|
+        @store.tab = event.index
+        @store.changed
+        refresh unless @refreshing || @window.destroyed?
+      end
       @window.on(CT::Event::Resize) { adapt; refresh }
       @window.on(CT::Event::KeyPress) { |event| key(event) }
       adapt
@@ -177,6 +191,13 @@ module MinknowTui
       update_lists
       update_detail
       update_events
+      view = {@store.generation, @store.tab}
+      if @last_view && @last_view != view
+        # Terminal-owned graph images are outside Crysterm's cell diff.
+        @window.clear_device
+        @window.invalidate_region(0, @window.awidth, 0, @window.aheight)
+      end
+      @last_view = view
       @window.update
     ensure
       @refreshing = false

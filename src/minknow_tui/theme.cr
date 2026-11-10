@@ -14,7 +14,7 @@ module MinknowTui
 
     STYLESHEET = <<-CSS
       Box {
-        color: #{TEXT}; background-color: #{BACKGROUND}; border-color: #{BORDER};
+        color: #{TEXT}; background-color: transparent; border-color: #{BORDER};
       }
       Box:selected {
         color: #{BACKGROUND}; background-color: #{GREEN};
@@ -27,7 +27,7 @@ module MinknowTui
       ListTable:selected, List:selected, CommandBar:selected {
         color: #{BACKGROUND}; background-color: #{GREEN};
       }
-      ListTable::label, Log::label, Dialog::label { color: #{GREEN}; }
+      ListTable::label, Log::label, Dialog::label { color: #{GREEN}; border: none; }
       Dialog { border: solid; border-color: #{GREEN}; }
       TabWidget { color: #{GREEN}; }
       CommandBar::prefix { color: #{TURQUOISE}; }

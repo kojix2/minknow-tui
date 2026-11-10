@@ -4,11 +4,12 @@ require "../src/minknow_tui/ui"
 
 Crysterm::Config.set "screen.headless", Crysterm::Headless::Always
 
-private def with_ui(width, height, &)
+private def with_ui(width, height, iterm2 = false, &)
   store = MinknowTui::Store.new
   demo = MinknowTui::Demo.new(store)
   window = Crysterm::Window.new(input: IO::Memory.new, output: IO::Memory.new, error: IO::Memory.new,
     width: width, height: height, default_quit_keys: false, terminfo: Unibilium.from_terminal("xterm-256color"), force_unicode: true)
+  window.tput.emulator.iterm2 = true if iterm2
   interface = MinknowTui::UI.new(store, window)
   window.repaint
   begin
@@ -20,6 +21,28 @@ private def with_ui(width, height, &)
 end
 
 describe "minknow-tui headless UI" do
+  it "cancels pickers without changing selection, including empty pickers" do
+    with_ui(120, 36) do |store, _, interface, window|
+      selected = {store.position_id, store.run_id, store.acquisition_id, store.generation}
+      ['p', 'r', 'a'].each do |key|
+        window.press(key)
+        interface.dialog.should_not be_nil
+        window.press(Tput::Key::Down) if key == 'r'
+        window.press(Tput::Key::Escape)
+        interface.dialog.should be_nil
+        {store.position_id, store.run_id, store.acquisition_id, store.generation}.should eq(selected)
+      end
+      store.select_position(nil)
+      interface.refresh
+      ['r', 'a'].each do |key|
+        window.press(key)
+        window.press(Tput::Key::Escape)
+        interface.dialog.should be_nil
+        store.position_id.should be_nil
+      end
+    end
+  end
+
   it "moves list selection with vi keys, changes focus, and filters using text input" do
     with_ui(120, 36) do |store, _, interface, window|
       interface.positions_view.focus
@@ -71,6 +94,54 @@ describe "minknow-tui headless UI" do
   end
 
   [{120, 36}, {80, 24}].each do |size|
+    it "switches iTerm2 tabs immediately without image layers at #{size}" do
+      backend = Crysterm::Config.media_backend
+      Crysterm::Config.set "media.backend", Crysterm::Widget::Media::Backend::Auto
+      with_ui(size[0], size[1], iterm2: true) do |store, demo, interface, window|
+        output = window.output.as(IO::Memory)
+        [1, 2, 3, 0, 3, 1, 0].each do |tab|
+          output.clear
+          interface.tabs.current_index = tab
+          store.tab.should eq(tab)
+          output.to_s.should contain("\e[2J")
+          demo.update
+          interface.refresh
+          window.repaint
+          emitted = output.to_s
+          emitted.should_not contain("\e]1337;File=")
+          emitted.should_not contain("\eP")
+          emitted.should_not contain("\e_G")
+          emitted.should match(/[\x{2801}-\x{28ff}]/) if tab == 1 || tab == 3
+        end
+      end
+    ensure
+      Crysterm::Config.set "media.backend", backend if backend
+    end
+
+    it "clears terminal graphics when switching between Host and a position at #{size}" do
+      with_ui(size[0], size[1]) do |store, demo, interface, window|
+        output = window.output.as(IO::Memory)
+        ['1', '2', '3', '4'].each do |tab|
+          window.press(tab)
+          [nil, "X1"].each do |position|
+            output.clear
+            store.select_position(position)
+            demo.update
+            interface.refresh
+            window.repaint
+            output.to_s.should contain("\e[2J")
+            interface.overview.content.includes?("Host overview").should eq(position.nil?)
+            window.dump.to_s.should contain("TUI: Demo mode:")
+
+            output.clear
+            interface.refresh
+            window.repaint
+            output.to_s.should_not contain("\e[2J")
+          end
+        end
+      end
+    end
+
     it "renders and navigates positions, runs, acquisitions and statistics at #{size}" do
       with_ui(size[0], size[1]) do |store, demo, interface, window|
         interface.compact?.should eq(size[0] < 100)
