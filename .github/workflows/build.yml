@@ -21,15 +21,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: crystal-lang/install-crystal@master
-        if: runner.os == 'macOS'
-        with:
-          crystal: latest
-          shards: latest
-
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake pkgconf jq openssl bdw-gc pcre2 libyaml unibilium ameba
+        run: brew install crystal cmake pkgconf jq openssl bdw-gc pcre2 libyaml unibilium ameba
 
       - name: Build and test
         shell: bash
