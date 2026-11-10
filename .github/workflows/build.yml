@@ -23,7 +23,7 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install crystal cmake pkgconf jq openssl bdw-gc pcre2 libyaml unibilium ameba
+        run: brew install crystal cmake pkgconf jq openssl bdw-gc pcre2 libyaml unibilium crystal-ameba/ameba/ameba
 
       - name: Build and test
         shell: bash
@@ -33,7 +33,7 @@ jobs:
               crystallang/crystal:latest-alpine sh -ec \
               'apk add --no-cache bash build-base cmake curl jq pkgconf git binutils \
                 openssl-dev openssl-libs-static gc-dev gc-static pcre2-dev pcre2-static \
-                yaml-dev yaml-static zlib-dev zlib-static unibilium-dev ncurses-terminfo-base
+                yaml-dev yaml-static zlib-dev zlib-static ncurses-terminfo-base
                exec bash .github/scripts/build.sh'
             # Run outside Alpine as well, to catch runtime dependencies.
             binary=$(find dist -type f -name minknow-tui -print -quit)

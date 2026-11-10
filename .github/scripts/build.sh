@@ -29,6 +29,19 @@ if [[ $(uname -s) == Darwin ]]; then
   flags+=(--link-flags=-Wl,-search_paths_first)
 else
   platform=linux
+  # Alpine's unibilium can still have the old 4 KiB terminfo limit.
+  url=$(curl -fsSL --retry 3 https://api.github.com/repos/neovim/unibilium/releases/latest |
+    jq -er .tarball_url)
+  mkdir -p "$work/unibilium"
+  curl -fsSL --retry 3 "$url" -o "$work/unibilium.tar.gz"
+  tar -xzf "$work/unibilium.tar.gz" -C "$work/unibilium" --strip-components=1
+  cmake -S "$work/unibilium" -B "$work/unibilium-build" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_MAN_PAGES=OFF -DBUILD_TESTS=OFF -DBUILD_TOOLS=OFF
+  cmake --build "$work/unibilium-build" --parallel
+  cmake --install "$work/unibilium-build"
+  test -f "$prefix/lib/libunibilium.a"
   flags+=(--static)
 fi
 shards install --frozen

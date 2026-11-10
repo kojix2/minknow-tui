@@ -81,6 +81,7 @@ Tests use a fake HTTP/2 server and headless UI; real hardware is not yet verifie
 `.github/scripts/build.sh` to test, build and package Linux and macOS binaries.
 The script builds `libnghttp2.a` from the latest stable source release.
 Linux uses `crystallang/crystal:latest-alpine` for fully static linking.
+It also builds the latest stable unibilium to read modern terminfo files.
 macOS statically links external libraries and allows only OS system libraries
 as dynamic dependencies. Linkage and CLI/demo startup are checked before packaging.
 
@@ -95,7 +96,7 @@ Dependabot checks GitHub Actions weekly. Application dependencies use `shard.loc
 ## Checks
 
 ```sh
-brew install ameba  # or install Ameba through your package manager
+brew install crystal-ameba/ameba/ameba  # or use your package manager
 ameba src spec tools
 crystal spec
 crystal tool format --check src spec tools
