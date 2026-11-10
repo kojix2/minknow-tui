@@ -108,8 +108,8 @@ module MinknowTui
     property product = ""
     property has_flow_cell : Bool? = nil
     property channels = 0_u32
-    property simulated = false
-    property connected = false
+    property? simulated = false
+    property? connected = false
     property current_run : String? = nil
     property current_acquisition : String? = nil
     property live = Metrics.new
@@ -122,7 +122,7 @@ module MinknowTui
 
     def status : String
       return software unless software == "Running"
-      return "Disconnected (last known)" if updated_at && !connected
+      return "Disconnected (last known)" if updated_at && !connected?
       return "No flow cell" if has_flow_cell == false
       return "Sequencing" if current_acquisition
       return "Protocol active" if current_run
@@ -130,7 +130,7 @@ module MinknowTui
     end
 
     def history : Array(Run)
-      runs.values.sort_by { |run| {run.id == current_run ? 1 : 0, run.started_at.try(&.to_unix) || 0_i64} }.reverse
+      runs.values.sort_by! { |run| {run.id == current_run ? 1 : 0, run.started_at.try(&.to_unix) || 0_i64} }.reverse!
     end
   end
 
@@ -151,7 +151,7 @@ module MinknowTui
     property position_id : String? = nil
     property run_id : String? = nil
     property acquisition_id : String? = nil
-    property follow_current = true
+    property? follow_current = true
     property tab = 0
     property filter = ""
     property detail = Metrics.new
@@ -167,7 +167,7 @@ module MinknowTui
     end
 
     def run : Run?
-      position.try { |p| p.runs[run_id]? }
+      position.try { |position| position.runs[run_id]? }
     end
 
     def select_position(id : String?)
@@ -198,7 +198,7 @@ module MinknowTui
       old = {run_id, acquisition_id}
       if p = position
         @follow_current = true if run_id && !p.runs.has_key?(run_id)
-        if follow_current
+        if follow_current?
           @run_id = p.current_run || p.history.first?.try(&.id)
         end
         if r = run

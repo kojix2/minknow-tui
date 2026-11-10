@@ -72,15 +72,15 @@ end
 describe MinknowTui::Options do
   it "supports demo and explicit manager ports without connecting" do
     options = MinknowTui::Options.new(["--demo", "--host", "example", "--port", "9502"])
-    options.demo.should be_true
-    options.explicit_port.should be_true
+    options.demo?.should be_true
+    options.explicit_port?.should be_true
     options.host.should eq("example")
     options.port.should eq(9502)
   end
 
   it "prints help/version and rejects invalid ports" do
     output = IO::Memory.new
-    MinknowTui::Options.new(["--help"], output).exit_requested.should be_true
+    MinknowTui::Options.new(["--help"], output).exit_requested?.should be_true
     output.to_s.should contain("--demo")
     expect_raises(ArgumentError) { MinknowTui::Options.new(["--port", "70000"]) }
   end

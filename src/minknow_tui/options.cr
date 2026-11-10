@@ -4,9 +4,9 @@ module MinknowTui
   class Options
     property host = ENV["MINKNOW_HOST"]? || "localhost"
     property port = 9501
-    property explicit_port = false
-    property demo = false
-    property exit_requested = false
+    property? explicit_port = false
+    property? demo = false
+    property? exit_requested = false
 
     def initialize(args = ARGV, output : IO = STDOUT)
       if port = ENV["MINKNOW_PORT"]?
@@ -24,7 +24,7 @@ module MinknowTui
         parser.on("-h", "--help", "Show help") { output.puts parser; @exit_requested = true }
         parser.on("--version", "Show version") { output.puts VERSION; @exit_requested = true }
         parser.invalid_option { |flag| raise ArgumentError.new("Unknown option: #{flag}") }
-        parser.unknown_args { |args| raise ArgumentError.new("Unexpected arguments: #{args.join(" ")}") unless args.empty? }
+        parser.unknown_args { |remaining| raise ArgumentError.new("Unexpected arguments: #{remaining.join(" ")}") unless remaining.empty? }
       end
       raise ArgumentError.new("Host must not be empty") if @host.empty?
     end

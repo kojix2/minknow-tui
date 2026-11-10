@@ -183,22 +183,18 @@ module MinknowTui
     end
 
     private def update_lists
-      values = @store.positions.values.sort_by(&.name).select { |p| "#{p.name} #{p.status} #{p.error}".downcase.includes?(@store.filter.downcase) }
-      @position_keys = [nil.as(String?)] + values.map { |p| p.name.as(String?) }
-      rows = [["Position", "State"], ["Host", "Overview"]] + values.map { |p| [MinknowTui.text(p.name), p.status] }
+      values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
+      @position_keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
+      rows = [["Position", "State"], ["Host", "Overview"]] + values.map { |position| [MinknowTui.text(position.name), position.status] }
       @positions_view.rows = rows unless @positions_view.rows == rows
       @positions_view.current_index = (@position_keys.index(@store.position_id) || 0) + 1
       runs = @store.position.try(&.history) || [] of Run
-      runs = runs.select { |r| "#{r.label} #{r.id} #{r.experiment}".downcase.includes?(@store.filter.downcase) }
+      runs = runs.select { |run| "#{run.label} #{run.id} #{run.experiment}".downcase.includes?(@store.filter.downcase) }
       @run_keys = runs.map(&.id)
-      rows = [["Run / sample", "State"]] + runs.map { |r| ["#{r.id == @store.position.try(&.current_run) ? "* " : r.started_at.try(&.to_local.to_s("%m/%d "))}#{r.label}", r.state] }
+      rows = [["Run / sample", "State"]] + runs.map { |run| ["#{run.id == @store.position.try(&.current_run) ? "* " : run.started_at.try(&.to_local.to_s("%m/%d "))}#{run.label}", run.state] }
       @runs_view.rows = rows unless @runs_view.rows == rows
       @runs_view.current_index = (@run_keys.index(@store.run_id) || 0) + 1 unless runs.empty?
       @runs_view.label = "Runs: #{MinknowTui.text(@store.position_id || "Host")} — API history"
-    end
-
-    private def metrics : Metrics
-      @store.detail
     end
 
     private def acquisition_label : String
@@ -206,7 +202,7 @@ module MinknowTui
     end
 
     private def update_detail
-      unless p = @store.position
+      unless position = @store.position
         @overview.content = "\n  Host overview\n\n  #{@store.host_description}\n  Manager: #{@store.endpoint}\n  Core: #{@store.version}\n  Distribution: #{@store.distribution}\n  Positions: #{@store.positions.size}\n  Connection: #{@store.connection}\n\n  Disk space (last known):\n  #{@store.disk}\n\n  Select a position with p or the Positions pane.\n  History is limited to runs available from the MinKNOW API."
         @yield_text.content = "Select a position and protocol run."
         @quality_text.content = "Select a position and protocol run."
@@ -214,33 +210,57 @@ module MinknowTui
         clear_charts
         return
       end
-      r = @store.run
-      m = metrics
-      temperature = m.temperature || p.live.temperature
-      temperature_label = m.temperature ? m.temperature_label : p.live.temperature_label
-      temperature_label = "Current #{temperature_label}" unless m.temperature
-      stamp = m.updated_at.try { |t| t.to_local.to_s("%H:%M:%S %Z") } || "not received"
-      @overview.content = "\n  #{MinknowTui.text(p.name)}  #{p.status}#{p.simulated ? " [SIMULATED]" : ""}\n" +
-                          "  Software: #{p.software}  #{p.error}\n  Sample: #{r.try(&.sample) || "—"}\n  Experiment: #{r.try(&.experiment) || "—"}\n" +
-                          "  Run: #{r.try(&.id) || "—"}\n  Protocol: #{r.try(&.protocol) || "—"}\n  State: #{r.try(&.state) || "No active run"} / #{r.try(&.phase) || "—"}\n" +
-                          "  Elapsed: #{r.try(&.elapsed) || "—"}\n  #{acquisition_label}\n\n" +
-                          "  Pass yield: #{MinknowTui.number(m.pass_bases, "b")}    Fail: #{MinknowTui.number(m.fail_bases, "b")}\n" +
-                          "  Estimated yield: #{MinknowTui.number(m.estimated_bases, "b")}\n  Acquired reads: #{MinknowTui.number(m.reads)}\n" +
-                          "  N50 basecalled: #{MinknowTui.number(m.n50, "b")}    Estimated: #{MinknowTui.number(m.estimated_n50, "b")}\n" +
-                          "  #{temperature_label}: #{temperature ? "%.1f °C" % temperature : "—"}\n" +
-                          "  Flow cell: #{p.flow_cell}  #{p.product}\n  Output: #{r.try(&.output) || "—"}\n\n  Summary received: #{stamp}\n  Position API: #{p.capabilities["flow_cell"]? || p.capabilities["activity"]? || "Connecting"}\n  API history may be cleared when MinKNOW restarts."
-      @yield_text.content = "#{acquisition_label}\nPass: #{MinknowTui.number(m.pass_bases, "b")}  Fail: #{MinknowTui.number(m.fail_bases, "b")}  Estimated: #{MinknowTui.number(m.estimated_bases, "b")}\n" +
-                            "Acquired reads: #{MinknowTui.number(m.reads)}\nBasecalls pass / fail: #{MinknowTui.number(m.pass_calls)} / #{MinknowTui.number(m.fail_calls)}\n" +
-                            "Basecaller processed / skipped: #{m.basecalling_enabled == false ? "Disabled" : m.processed ? "%.1f%%" % (m.processed.not_nil! * 100) : "—"}\n#{capability(p, "yield")}"
-      @quality_text.content = "#{acquisition_label}\nN50 basecalled: #{MinknowTui.number(m.n50, "b")}  Estimated: #{MinknowTui.number(m.estimated_n50, "b")}\n" +
-                              "Pore occupancy: #{m.occupancy ? "%.1f%%" % (m.occupancy.not_nil! * 100) : "—"}\nRead length: #{m.histogram_unit}; Y: read counts\n#{capability(p, "read_lengths")}"
-      @states.content = "Channel time fractions (not pore counts):\n" + m.channel_states.map { |k, v| "#{MinknowTui.text(k)}: #{"%.1f%%" % v}" }.join("  ") + "\n#{capability(p, "duty_time")}"
-      @device_text.content = "#{MinknowTui.text(p.name)} — #{p.device_type} #{p.simulated ? "[SIMULATED]" : ""}\n" +
-                             "Device: #{p.device}  Flow cell: #{p.flow_cell} #{p.product} (#{p.channels} channels)\n" +
-                             "Endpoint: #{@store.endpoint.sub(/:\d+$/, "")}:#{p.port || "unavailable"}\nSoftware: #{p.software}  #{p.error}\n" +
-                             "#{temperature_label}: #{temperature ? "%.1f °C" % temperature : "—"}\n#{acquisition_label}\n" +
-                             p.capabilities.map { |k, v| "#{k}: #{v}" }.join("\n")
-      update_charts(m)
+      metrics = @store.detail
+      update_overview(position, metrics)
+      update_statistics(position, metrics)
+      update_device(position, metrics)
+      update_charts(metrics)
+    end
+
+    private def temperature_text(position : Position, metrics : Metrics) : String
+      temperature = metrics.temperature || position.live.temperature
+      label = metrics.temperature ? metrics.temperature_label : "Current #{position.live.temperature_label}"
+      "#{label}: #{temperature ? "%.1f °C" % temperature : "—"}"
+    end
+
+    private def percentage(value : Float64?) : String
+      value.try { |number| "%.1f%%" % (number * 100) } || "—"
+    end
+
+    private def update_overview(position : Position, metrics : Metrics)
+      run = @store.run
+      @overview.content = "\n  #{MinknowTui.text(position.name)}  #{position.status}#{position.simulated? ? " [SIMULATED]" : ""}\n" +
+                          "  Software: #{position.software}  #{position.error}\n  Sample: #{run.try(&.sample) || "—"}\n  Experiment: #{run.try(&.experiment) || "—"}\n" +
+                          "  Run: #{run.try(&.id) || "—"}\n  Protocol: #{run.try(&.protocol) || "—"}\n  State: #{run.try(&.state) || "No active run"} / #{run.try(&.phase) || "—"}\n" +
+                          "  Elapsed: #{run.try(&.elapsed) || "—"}\n  #{acquisition_label}\n\n" +
+                          "  Pass yield: #{MinknowTui.number(metrics.pass_bases, "b")}    Fail: #{MinknowTui.number(metrics.fail_bases, "b")}\n" +
+                          "  Estimated yield: #{MinknowTui.number(metrics.estimated_bases, "b")}\n  Acquired reads: #{MinknowTui.number(metrics.reads)}\n" +
+                          "  N50 basecalled: #{MinknowTui.number(metrics.n50, "b")}    Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
+                          "  #{temperature_text(position, metrics)}\n" +
+                          "  Flow cell: #{position.flow_cell}  #{position.product}\n  Output: #{run.try(&.output) || "—"}\n\n" + data_status(position, metrics)
+    end
+
+    private def data_status(position : Position, metrics : Metrics) : String
+      stamp = metrics.updated_at.try(&.to_local.to_s("%H:%M:%S %Z")) || "not received"
+      api = position.capabilities["flow_cell"]? || position.capabilities["activity"]? || "Connecting"
+      "  Summary received: #{stamp}\n  Position API: #{api}\n  API history may be cleared when MinKNOW restarts."
+    end
+
+    private def update_statistics(position : Position, metrics : Metrics)
+      @yield_text.content = "#{acquisition_label}\nPass: #{MinknowTui.number(metrics.pass_bases, "b")}  Fail: #{MinknowTui.number(metrics.fail_bases, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_bases, "b")}\n" +
+                            "Acquired reads: #{MinknowTui.number(metrics.reads)}\nBasecalls pass / fail: #{MinknowTui.number(metrics.pass_calls)} / #{MinknowTui.number(metrics.fail_calls)}\n" +
+                            "Basecaller processed / skipped: #{metrics.basecalling_enabled == false ? "Disabled" : percentage(metrics.processed)}\n#{capability(position, "yield")}"
+      @quality_text.content = "#{acquisition_label}\nN50 basecalled: #{MinknowTui.number(metrics.n50, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
+                              "Pore occupancy: #{percentage(metrics.occupancy)}\nRead length: #{metrics.histogram_unit}; Y: read counts\n#{capability(position, "read_lengths")}"
+      @states.content = "Channel time fractions (not pore counts):\n" + metrics.channel_states.map { |k, v| "#{MinknowTui.text(k)}: #{"%.1f%%" % v}" }.join("  ") + "\n#{capability(position, "duty_time")}"
+    end
+
+    private def update_device(position : Position, metrics : Metrics)
+      @device_text.content = "#{MinknowTui.text(position.name)} — #{position.device_type} #{position.simulated? ? "[SIMULATED]" : ""}\n" +
+                             "Device: #{position.device}  Flow cell: #{position.flow_cell} #{position.product} (#{position.channels} channels)\n" +
+                             "Endpoint: #{@store.endpoint.sub(/:\d+$/, "")}:#{position.port || "unavailable"}\nSoftware: #{position.software}  #{position.error}\n" +
+                             "#{temperature_text(position, metrics)}\n#{acquisition_label}\n" +
+                             position.capabilities.map { |k, v| "#{k}: #{v}" }.join("\n")
     end
 
     private def capability(p : Position, key : String) : String
@@ -303,19 +323,33 @@ module MinknowTui
     end
 
     def pick_position
-      values = @store.positions.values.sort_by(&.name).select { |p| "#{p.name} #{p.status}".downcase.includes?(@store.filter.downcase) }
-      keys = [nil.as(String?)] + values.map { |p| p.name.as(String?) }
-      track Picker.new(@window, "Positions", ["Host overview"] + values.map { |p| "#{MinknowTui.text(p.name)}  #{p.status}" }) { |i| @store.select_position(keys[i]?) }
+      values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status}".downcase.includes?(@store.filter.downcase) }
+      keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
+      track Picker.new(@window, "Positions", ["Host overview"] + values.map { |position| "#{MinknowTui.text(position.name)}  #{position.status}" }) { |i| @store.select_position(keys[i]?) }
     end
 
     def pick_run
-      values = (@store.position.try(&.history) || [] of Run).select { |r| "#{r.label} #{r.id}".downcase.includes?(@store.filter.downcase) }
-      track Picker.new(@window, "Runs — available API history", values.map { |r| "#{r.started_at.try(&.to_local.to_s("%m/%d %H:%M"))} #{r.label}  #{r.state}  #{r.id}" }) { |i| @store.select_run(values[i]?.try(&.id)) }
+      values = (@store.position.try(&.history) || [] of Run).select { |run| "#{run.label} #{run.id}".downcase.includes?(@store.filter.downcase) }
+      track Picker.new(@window, "Runs — available API history", values.map { |run| "#{run.started_at.try(&.to_local.to_s("%m/%d %H:%M"))} #{run.label}  #{run.state}  #{run.id}" }) { |i| @store.select_run(values[i]?.try(&.id)) }
     end
 
     def pick_acquisition
       values = @store.run.try(&.acquisitions) || [] of String
       track Picker.new(@window, "Acquisitions — statistics are not combined", values) { |i| @store.select_acquisition(values[i]?) }
+    end
+
+    private def control_key(key : Tput::Key?) : Bool
+      case key
+      when Tput::Key::CtrlQ, Tput::Key::CtrlC then @window.quit
+      when Tput::Key::Tab                     then @window.focus_next
+      when Tput::Key::ShiftTab                then @window.focus_previous
+      when Tput::Key::Escape
+        @store.filter = ""
+        refresh
+      else
+        return false
+      end
+      true
     end
 
     private def key(event : CT::Event::KeyPress)
@@ -341,16 +375,7 @@ module MinknowTui
           refresh
         end
       else
-        case event.key
-        when Tput::Key::CtrlQ, Tput::Key::CtrlC then @window.quit
-        when Tput::Key::Tab                     then @window.focus_next
-        when Tput::Key::ShiftTab                then @window.focus_previous
-        when Tput::Key::Escape
-          @store.filter = ""
-          refresh
-        else
-          return
-        end
+        return unless control_key(event.key)
       end
       event.accept
       @store.changed

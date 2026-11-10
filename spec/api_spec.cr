@@ -14,7 +14,7 @@ describe MinknowTui::Decode do
     MinknowTui::Decode.run(raw).output.should eq("")
     first = MinknowApi::Protocol::ProtocolPhaseSnapshot.new
     first.phase = Proto::OpenEnum(MinknowApi::Protocol::ProtocolPhase).new(1000)
-    first.timestamp = Google::Protobuf::Timestamp.new.tap { |t| t.seconds = 100_i64 }
+    first.timestamp = Google::Protobuf::Timestamp.new.tap(&.seconds=(100_i64))
     raw.phase_history = [first]
     MinknowTui::Decode.run(raw).phase.should eq("Unknown(1000)")
   end

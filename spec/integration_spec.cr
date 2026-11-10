@@ -3,8 +3,8 @@ require "./support/fake_minknow"
 
 describe "MinKNOW compatibility over local HTTP/2" do
   it "uses histogram N50 as a fallback and decodes overlapping yield, quality and temperature streams" do
-    with_fake_minknow do |api, store, peers, calls|
-      peers.each { |peer| peer.statistics_available = true }
+    with_fake_minknow do |api, store, peers, _|
+      peers.each(&.statistics_available=(true))
       api.start
       wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
       store.select_position("X1")
@@ -23,7 +23,7 @@ describe "MinKNOW compatibility over local HTTP/2" do
   end
 
   it "falls back from unsupported streams, loads runs and continues when optional APIs are absent" do
-    with_fake_minknow do |api, store, peers, calls|
+    with_fake_minknow do |api, store, _, calls|
       api.start
       wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
       wait_for { store.capabilities["watch_positions"]? == "Unsupported" }
@@ -46,7 +46,7 @@ describe "MinKNOW compatibility over local HTTP/2" do
 
   it "discards a delayed historical response after switching acquisition" do
     with_fake_minknow do |api, store, peers, calls|
-      peers.each { |peer| peer.slow_old_summary = true }
+      peers.each(&.slow_old_summary=(true))
       api.start
       wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
       store.select_position("X1")
@@ -62,14 +62,14 @@ describe "MinKNOW compatibility over local HTTP/2" do
   end
 
   it "keeps zero positions usable and distinguishes authentication failure" do
-    with_fake_minknow do |api, store, peers, calls|
-      peers.each { |peer| peer.empty = true }
+    with_fake_minknow do |api, store, peers, _|
+      peers.each(&.empty=(true))
       api.start
       wait_for { store.connection == "Connected" && store.capabilities["positions"]? == "Available" }
       store.positions.should be_empty
     end
-    with_fake_minknow do |api, store, peers, calls|
-      peers.each { |peer| peer.authenticated = false }
+    with_fake_minknow do |api, store, peers, _|
+      peers.each(&.authenticated=(false))
       api.start
       wait_for { store.connection == "Authentication required" }
       store.capabilities.values.should_not contain("Unsupported")
@@ -77,8 +77,8 @@ describe "MinKNOW compatibility over local HTTP/2" do
   end
 
   it "treats idle positions as normal and reconciles unplugging and reconnecting" do
-    with_fake_minknow do |api, store, peers, calls|
-      peers.each { |peer| peer.active_run = false }
+    with_fake_minknow do |api, store, peers, _|
+      peers.each(&.active_run=(false))
       api.start
       wait_for { store.positions["X1"]?.try(&.capabilities["current_protocol"]?) == "Not applicable / no active run" }
       position = store.positions["X1"]
@@ -86,10 +86,10 @@ describe "MinKNOW compatibility over local HTTP/2" do
       position.current_acquisition.should be_nil
       position.status.should_not eq("Sequencing")
       store.select_position("X1")
-      peers.each { |peer| peer.empty = true }
+      peers.each(&.empty=(true))
       wait_for { store.positions.empty? }
       store.position_id.should be_nil
-      peers.each { |peer| peer.empty = false }
+      peers.each(&.empty=(false))
       wait_for { store.positions.has_key?("X1") }
       store.positions["X1"].should_not be(position)
     end

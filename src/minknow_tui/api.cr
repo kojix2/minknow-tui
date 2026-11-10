@@ -14,7 +14,7 @@ module MinknowTui
     extend self
 
     def time(value : Google::Protobuf::Timestamp?) : Time?
-      value.try { |t| Time.unix(t.seconds) + t.nanos.nanoseconds }
+      value.try { |timestamp| Time.unix(timestamp.seconds) + timestamp.nanos.nanoseconds }
     end
 
     def name(value : Proto::OpenEnum(T), prefix = "") : String forall T
@@ -165,26 +165,31 @@ module MinknowTui
       token = JSON.parse(File.read(response.path))["token"]?.try(&.as_s?)
       @config = Minknow::ConnectionConfig.new(host: @config.host, port: @config.port,
         tls: @config.tls?, authentication_token: token, auto_local_auth: false)
-    rescue ex : GRPC::StatusError
+    rescue GRPC::StatusError
       # Guest access and explicit client certificates can still work.
-    rescue ex : IO::Error | JSON::ParseException
+    rescue IO::Error | JSON::ParseException
       @store.event("TUI", "WARN", "Local authentication token could not be read")
     end
 
-    private def connect
+    private def open_manager
       ch = channel(@config)
       client = MA::Manager::ManagerService::Client.new(ch)
       begin
         version = client.get_version_info(MA::Manager::GetVersionInfoRequest.new, context)
       rescue ex
         ch.close
-        if !@options.explicit_port && @config.port == 9501 && !@config.client_certificate_configured? && refused?(ex)
+        if !@options.explicit_port? && @config.port == 9501 && !@config.client_certificate_configured? && refused?(ex)
           @config = @config.with_port(9502)
           @store.endpoint = "#{@config.host}:9502"
           @store.event("TUI", "INFO", "Manager port 9501 refused the connection; trying TLS port 9502")
         end
         raise ex
       end
+      {ch, client, version}
+    end
+
+    private def connect
+      ch, client, version = open_manager
       unless @root.active?
         ch.close
         return
@@ -199,22 +204,7 @@ module MinknowTui
       if host = attempt(@root, @store.capabilities, "describe_host") { client.describe_host(MA::Manager::DescribeHostRequest.new, context) }
         @store.host_description = MinknowTui.text("#{host.description} #{host.serial}")
       end
-      poll(@root, @store.capabilities, "positions", 5.seconds) do
-        if @store.capabilities["watch_positions"]? == "Unsupported" || @store.positions.empty?
-          values = [] of MA::Manager::FlowCellPosition
-          consume(@root, client.flow_cell_positions(MA::Manager::FlowCellPositionsRequest.new, context)) { |r| values.concat r.positions }
-          if @root.active?
-            values.each { |p| update_position(p) }
-            (@store.positions.keys - values.map(&.name)).each { |id| remove_position(id) }
-          end
-        end
-      end
-      watch(@root, @store.capabilities, "watch_positions") do
-        consume(@root, client.watch_flow_cell_positions(MA::Manager::WatchFlowCellPositionsRequest.new, stream_context)) do |r|
-          (r.additions + r.changes).each { |p| update_position(p) }
-          r.removals.each { |id| remove_position(id) }
-        end
-      end
+      watch_positions(client)
       poll(@root, @store.capabilities, "manager_health", 15.seconds) do
         client.get_version_info(MA::Manager::GetVersionInfoRequest.new, context)
         if @root.active?
@@ -225,7 +215,7 @@ module MinknowTui
       poll(@root, @store.capabilities, "manager_disk", 15.seconds) do
         value = client.get_disk_space_info(MA::Manager::GetDiskSpaceInfoRequest.new, context)
         if @root.active?
-          @store.disk = value.filesystem_disk_space_info.map { |d| "#{MinknowTui.text(d.filesystem_id)}: #{MinknowTui.number(d.bytes_available, "B")} free / #{MinknowTui.number(d.bytes_capacity, "B")}#{d.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
+          @store.disk = value.filesystem_disk_space_info.map { |disk| "#{MinknowTui.text(disk.filesystem_id)}: #{MinknowTui.number(disk.bytes_available, "B")} free / #{MinknowTui.number(disk.bytes_capacity, "B")}#{disk.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
           @store.disk_updated_at = Time.utc
         end
       end
@@ -233,12 +223,31 @@ module MinknowTui
       watch(@root, @store.capabilities, "notifications") do
         request = MA::Notifications::StreamNotificationsRequest.new
         request.include_updates_for_existing = true
-        consume(@root, notifications.stream_notifications(request, stream_context)) do |r|
-          r.notifications.each do |n|
-            next unless content = n.content
+        consume(@root, notifications.stream_notifications(request, stream_context)) do |response|
+          response.notifications.each do |notification|
+            next unless content = notification.content
             @store.event("Host", Decode.name(content.type_, "NOTIFICATION_TYPE_"), content.notification_text,
-              Decode.time(n.created_at) || Time.utc, "notification:#{n.id}:#{Decode.time(n.last_updated_at).try(&.to_unix_ms)}")
+              Decode.time(notification.created_at) || Time.utc, "notification:#{notification.id}:#{Decode.time(notification.last_updated_at).try(&.to_unix_ms)}")
           end
+        end
+      end
+    end
+
+    private def watch_positions(client)
+      poll(@root, @store.capabilities, "positions", 5.seconds) do
+        if @store.capabilities["watch_positions"]? == "Unsupported" || @store.positions.empty?
+          values = [] of MA::Manager::FlowCellPosition
+          consume(@root, client.flow_cell_positions(MA::Manager::FlowCellPositionsRequest.new, context)) { |response| values.concat response.positions }
+          if @root.active?
+            values.each { |position| update_position(position) }
+            (@store.positions.keys - values.map(&.name)).each { |id| remove_position(id) }
+          end
+        end
+      end
+      watch(@root, @store.capabilities, "watch_positions") do
+        consume(@root, client.watch_flow_cell_positions(MA::Manager::WatchFlowCellPositionsRequest.new, stream_context)) do |response|
+          (response.additions + response.changes).each { |position| update_position(position) }
+          response.removals.each { |id| remove_position(id) }
         end
       end
     end
@@ -277,7 +286,7 @@ module MinknowTui
       raise GRPC::StatusError.new(status) unless status.ok?
     end
 
-    private def consume(scope : Scope, stream : GRPC::ServerStream(T), &block : T ->) forall T
+    private def consume(scope : Scope, stream : GRPC::ServerStream(T), & : T ->) forall T
       id = scope.register { stream.cancel }
       begin
         stream.each { |value| yield value if scope.active? }
@@ -288,11 +297,11 @@ module MinknowTui
       end
     end
 
-    private def attempt(scope : Scope, caps : Hash(String, String), key : String, &block : -> T) : T? forall T
-      return nil unless scope.active?
-      return nil if caps[key]? == "Unsupported"
+    private def attempt(scope : Scope, caps : Hash(String, String), key : String, & : -> T) : T? forall T
+      return unless scope.active?
+      return if caps[key]? == "Unsupported"
       value = yield
-      return nil unless scope.active?
+      return unless scope.active?
       caps[key] = "Available"
       @store.changed
       value
@@ -360,7 +369,7 @@ module MinknowTui
       end
       p.port = port
       @store.changed
-      return unless port && !@positions.has_key?(raw.name)
+      return if !port || @positions.has_key?(raw.name)
       scope = Scope.new
       ch = channel(@config.with_port(port))
       @positions[raw.name] = {p, scope, ch}
@@ -397,7 +406,7 @@ module MinknowTui
       p.live = Metrics.new if id != p.current_acquisition
       p.current_acquisition = id
       p.live.basecalling_enabled = raw.config_summary.try(&.basecalling_enabled)
-      Decode.summary(p.live, raw.yield_summary.not_nil!) if raw.yield_summary
+      raw.yield_summary.try { |summary| Decode.summary(p.live, summary) }
       @store.sync_selection if @store.position_id == p.name
       @store.changed
     end
@@ -407,22 +416,42 @@ module MinknowTui
       protocol = MA::Protocol::ProtocolService::Client.new(ch)
       acquisition = MA::Acquisition::AcquisitionService::Client.new(ch)
       device = MA::Device::DeviceService::Client.new(ch)
-      last_reconcile = Time.instant - 15.seconds
       watch(scope, p.capabilities, "activity") do
-        consume(scope, instance.stream_instance_activity(MA::Instance::StreamInstanceActivityRequest.new, stream_context)) do |r|
-          r.device_info.try(&.device_info).try { |v| Decode.device(p, v) }
-          r.flow_cell_info.try { |v| Decode.flow_cell(p, v) }
-          r.protocol_run_info.try { |v| apply_run(p, v, true) }
-          r.acquisition_run_info.try { |v| apply_acquisition(p, v) }
-          r.yield_summary.try { |v| Decode.summary(p.live, v) }
-          r.n50.try { |v| Decode.n50(p.live, v.n50, v.estimated_n50) }
-          r.flow_cell_health.try { |v| p.live.channel_states = v.channel_state_percentages.transform_values(&.to_f64) }
+        consume(scope, instance.stream_instance_activity(MA::Instance::StreamInstanceActivityRequest.new, stream_context)) do |response|
+          response.device_info.try(&.device_info).try { |v| Decode.device(p, v) }
+          response.flow_cell_info.try { |v| Decode.flow_cell(p, v) }
+          response.protocol_run_info.try { |v| apply_run(p, v, true) }
+          response.acquisition_run_info.try { |v| apply_acquisition(p, v) }
+          response.yield_summary.try { |v| Decode.summary(p.live, v) }
+          response.n50.try { |v| Decode.n50(p.live, v.n50, v.estimated_n50) }
+          response.flow_cell_health.try { |v| p.live.channel_states = v.channel_state_percentages.transform_values(&.to_f64) }
           p.updated_at = Time.utc
           p.connected = true
           p.capabilities["activity"] = "Available"
           @store.changed
         end
       end
+      start_reconciliation(p, scope, protocol, acquisition, device)
+      start_history(p, scope, protocol)
+      poll(scope, p.capabilities, "temperature", 5.seconds) do
+        value = device.get_temperature(MA::Device::GetTemperatureRequest.new, context)
+        if scope.active? && (t = Decode.temperature(value))
+          p.live.temperature_label, p.live.temperature = t
+          @store.changed
+        end
+      end
+      # Position-level disk RPC replaces deprecated Manager disk RPC where available.
+      poll(scope, p.capabilities, "disk", 15.seconds) do
+        value = instance.get_disk_space_info(MA::Instance::GetDiskSpaceInfoRequest.new, context)
+        if scope.active?
+          @store.disk = value.filesystem_disk_space_info.map { |disk| "#{MinknowTui.text(disk.filesystem_id)}: #{MinknowTui.number(disk.bytes_available, "B")} free / #{MinknowTui.number(disk.bytes_capacity, "B")}#{disk.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
+          @store.disk_updated_at = Time.utc
+        end
+      end
+    end
+
+    private def start_reconciliation(p, scope, protocol, acquisition, device)
+      last_reconcile = Time.instant - 15.seconds
       poll(scope, p.capabilities, "reconcile", 5.seconds) do
         # Each request has its own fresh deadline, even after hours of runtime.
         if p.capabilities["activity"]? == "Unsupported" || Time.instant - last_reconcile >= 15.seconds
@@ -449,10 +478,13 @@ module MinknowTui
           end
           next unless scope.active?
           p.connected = p.capabilities["flow_cell"]? == "Available"
-          p.updated_at = Time.utc if p.connected
+          p.updated_at = Time.utc if p.connected?
           @store.sync_selection if @store.position_id == p.name
         end
       end
+    end
+
+    private def start_history(p, scope, protocol)
       poll(scope, p.capabilities, "history", 15.seconds) do
         response = protocol.list_protocol_runs(MA::Protocol::ListProtocolRunsRequest.new, context)
         next unless scope.active?
@@ -466,21 +498,6 @@ module MinknowTui
           apply_run(p, value) if value && scope.active?
         end
         @store.sync_selection if @store.position_id == p.name
-      end
-      poll(scope, p.capabilities, "temperature", 5.seconds) do
-        value = device.get_temperature(MA::Device::GetTemperatureRequest.new, context)
-        if scope.active? && (t = Decode.temperature(value))
-          p.live.temperature_label, p.live.temperature = t
-          @store.changed
-        end
-      end
-      # Position-level disk RPC replaces deprecated Manager disk RPC where available.
-      poll(scope, p.capabilities, "disk", 15.seconds) do
-        value = instance.get_disk_space_info(MA::Instance::GetDiskSpaceInfoRequest.new, context)
-        if scope.active?
-          @store.disk = value.filesystem_disk_space_info.map { |d| "#{MinknowTui.text(d.filesystem_id)}: #{MinknowTui.number(d.bytes_available, "B")} free / #{MinknowTui.number(d.bytes_capacity, "B")}#{d.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
-          @store.disk_updated_at = Time.utc
-        end
       end
     end
 
@@ -514,13 +531,13 @@ module MinknowTui
     end
 
     private def start_detail(p : Position, scope : Scope, ch : GRPC::Channel)
-      id = @store.acquisition_id.not_nil!
+      id = @store.acquisition_id
+      return unless id
       generation = @store.generation
       metrics = @store.detail
       statistics = MA::Statistics::StatisticsService::Client.new(ch)
       acquisition = MA::Acquisition::AcquisitionService::Client.new(ch)
       caps = scope.capabilities
-      n50_fallback_started = false
       # UNIMPLEMENTED is endpoint capability, not a per-run failure. Cache it
       # across tab/acquisition changes, but reset on a new position connection.
       p.capabilities.each do |key, value|
@@ -539,73 +556,11 @@ module MinknowTui
           end
         end
       end
-      if @store.tab == 0 || @store.tab == 2
-        poll(scope, caps, "n50", 15.seconds) do
-          request = MA::Statistics::ReadLengthN50Request.new
-          request.acquisition_run_id = id
-          response = attempt(scope, caps, "read_length_n50") { statistics.read_length_n50(request, context) }
-          if scope.active?
-            response.try(&.n50_data).try { |v| Decode.n50(metrics, v.basecalled_n50, v.estimated_n50) }
-            if caps["read_length_n50"]? == "Unsupported" && @store.tab == 0 && !n50_fallback_started
-              n50_fallback_started = true
-              histogram(scope, caps, statistics, id, metrics)
-            end
-          end
-        end
-      end
-      if @store.tab == 1
-        watch(scope, caps, "yield", finite: true) do
-          request = MA::Statistics::StreamAcquisitionOutputRequest.new
-          request.acquisition_run_id = id
-          request.data_selection = MA::Statistics::DataSelection.new.tap { |s| s.step = 60_u64 }
-          consume(scope, statistics.stream_acquisition_output(request, stream_context)) do |response|
-            response.snapshots.each do |group|
-              group.snapshots.each do |snapshot|
-                next unless y = snapshot.yield_summary
-                metrics.pass.put(snapshot.seconds, y.basecalled_pass_bases)
-                metrics.fail.put(snapshot.seconds, y.basecalled_fail_bases)
-                metrics.estimated.put(snapshot.seconds, y.estimated_selected_bases)
-              end
-            end
-            @store.changed
-          end
-        end
-      elsif @store.tab == 2
-        histogram(scope, caps, statistics, id, metrics)
-        watch(scope, caps, "duty_time", finite: true) do
-          request = MA::Statistics::StreamDutyTimeRequest.new
-          request.acquisition_run_id = id
-          request.data_selection = MA::Statistics::DataSelection.new.tap { |s| s.step = 60_u64 }
-          consume(scope, statistics.stream_duty_time(request, stream_context)) do |response|
-            if last = response.bucket_ranges.size.pred.to_i32
-              if last >= 0
-                values = response.channel_states.transform_values { |state| state.state_times[last]?.try(&.to_f64) || 0.0 }
-                total = values.values.sum
-                metrics.channel_states = values.transform_values { |v| total > 0 ? v * 100 / total : 0.0 }
-                metrics.occupancy = response.pore_occupancy[last]?.try(&.to_f64)
-              end
-            end
-            @store.changed
-          end
-        end
-      elsif @store.tab == 3
-        watch(scope, caps, "temperature_history", finite: true) do
-          request = MA::Statistics::StreamTemperatureRequest.new
-          request.acquisition_run_id = id
-          index = 0
-          consume(scope, statistics.stream_temperature(request, stream_context)) do |response|
-            # API temperature buckets are implicit one-minute intervals and
-            # initial history is followed by incremental packets.
-            response.temperatures.each do |packet|
-              if t = Decode.temperature(packet)
-                metrics.temperature_label, metrics.temperature = t
-                metrics.temperatures.put(index * 60, t[1])
-              end
-              index += 1
-            end
-            @store.changed
-          end
-        end
+      start_n50(scope, caps, statistics, id, metrics) if {0, 2}.includes?(@store.tab)
+      case @store.tab
+      when 1 then watch_yield(scope, caps, statistics, id, metrics)
+      when 2 then watch_quality(scope, caps, statistics, id, metrics)
+      when 3 then watch_temperature(scope, caps, statistics, id, metrics)
       end
       # Keep capability diagnostics up to date while streams are active.
       spawn do
@@ -617,14 +572,103 @@ module MinknowTui
       end
     end
 
+    private def start_n50(scope, caps, statistics, id, metrics)
+      n50_fallback_started = false
+      poll(scope, caps, "n50", 15.seconds) do
+        request = MA::Statistics::ReadLengthN50Request.new
+        request.acquisition_run_id = id
+        response = attempt(scope, caps, "read_length_n50") { statistics.read_length_n50(request, context) }
+        if scope.active?
+          response.try(&.n50_data).try { |v| Decode.n50(metrics, v.basecalled_n50, v.estimated_n50) }
+          if caps["read_length_n50"]? == "Unsupported" && @store.tab == 0 && !n50_fallback_started
+            n50_fallback_started = true
+            histogram(scope, caps, statistics, id, metrics)
+          end
+        end
+      end
+    end
+
+    private def watch_yield(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "yield", finite: true) do
+        request = MA::Statistics::StreamAcquisitionOutputRequest.new
+        request.acquisition_run_id = id
+        request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(60_u64))
+        consume(scope, statistics.stream_acquisition_output(request, stream_context)) do |response|
+          response.snapshots.each do |group|
+            group.snapshots.each do |snapshot|
+              next unless y = snapshot.yield_summary
+              metrics.pass.put(snapshot.seconds, y.basecalled_pass_bases)
+              metrics.fail.put(snapshot.seconds, y.basecalled_fail_bases)
+              metrics.estimated.put(snapshot.seconds, y.estimated_selected_bases)
+            end
+          end
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_quality(scope, caps, statistics, id, metrics)
+      histogram(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "duty_time", finite: true) do
+        request = MA::Statistics::StreamDutyTimeRequest.new
+        request.acquisition_run_id = id
+        request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(60_u64))
+        consume(scope, statistics.stream_duty_time(request, stream_context)) do |response|
+          if last = response.bucket_ranges.size.pred.to_i32
+            if last >= 0
+              values = response.channel_states.transform_values { |state| state.state_times[last]?.try(&.to_f64) || 0.0 }
+              total = values.values.sum
+              metrics.channel_states = values.transform_values { |v| total > 0 ? v * 100 / total : 0.0 }
+              metrics.occupancy = response.pore_occupancy[last]?.try(&.to_f64)
+            end
+          end
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_temperature(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "temperature_history", finite: true) do
+        request = MA::Statistics::StreamTemperatureRequest.new
+        request.acquisition_run_id = id
+        index = 0
+        consume(scope, statistics.stream_temperature(request, stream_context)) do |response|
+          # API temperature buckets are implicit one-minute intervals and
+          # initial history is followed by incremental packets.
+          response.temperatures.each do |packet|
+            if t = Decode.temperature(packet)
+              metrics.temperature_label, metrics.temperature = t
+              metrics.temperatures.put(index * 60, t[1])
+            end
+            index += 1
+          end
+          @store.changed
+        end
+      end
+    end
+
+    private def apply_histogram(metrics, response)
+      metrics.histogram_unit = Decode.name(response.read_length_type)
+      if data = response.histogram_data.first?
+        metrics.histogram = response.bucket_ranges.map_with_index do |bucket, index|
+          {"#{MinknowTui.number(bucket.start)}–#{MinknowTui.number(bucket.end_)}", (data.bucket_values[index]? || 0_u64).to_f64}
+        end
+        if response.read_length_type.to_s == "BasecalledBases"
+          metrics.n50 = data.n50 > 0 ? data.n50.to_f64 : nil
+        elsif response.read_length_type.to_s == "EstimatedBases"
+          metrics.estimated_n50 = data.n50 > 0 ? data.n50.to_f64 : nil
+        end
+      end
+    end
+
     private def histogram(scope, caps, client, id, metrics)
       watch(scope, caps, "read_lengths", finite: true) do
-        types = attempt(scope, caps, "read_length_types") { client.get_read_length_types(MA::Statistics::GetReadLengthTypesRequest.new.tap { |r| r.acquisition_run_id = id }, context) }
+        types = attempt(scope, caps, "read_length_types") { client.get_read_length_types(MA::Statistics::GetReadLengthTypesRequest.new.tap(&.acquisition_run_id=(id)), context) }
         available = types.try(&.available_types) || [] of Proto::OpenEnum(MA::Statistics::ReadLengthType)
         if caps["read_length_types"]? == "Unsupported"
           available = [2, 1, 0].map { |raw| Proto::OpenEnum(MA::Statistics::ReadLengthType).new(raw) }
         end
-        available = available.sort_by { |t| t.raw == 2 ? 0 : t.raw == 1 ? 1 : 2 }
+        available = available.sort_by { |kind| kind.raw == 2 ? 0 : kind.raw == 1 ? 1 : 2 }
         last_error : GRPC::StatusError? = nil
         completed = false
         available.each do |type|
@@ -633,21 +677,11 @@ module MinknowTui
           request.acquisition_run_id = id
           request.read_length_type = type
           request.poll_time_seconds = 60_u32
-          request.data_selection = MA::Statistics::DataSelection.new.tap { |s| s.step = 1000_u64 }
+          request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(1000_u64))
           begin
             consume(scope, client.stream_read_length_histogram(request, stream_context)) do |response|
               caps["read_lengths"] = "Available"
-              metrics.histogram_unit = Decode.name(response.read_length_type)
-              if data = response.histogram_data.first?
-                metrics.histogram = response.bucket_ranges.map_with_index do |bucket, index|
-                  {"#{MinknowTui.number(bucket.start)}–#{MinknowTui.number(bucket.end_)}", (data.bucket_values[index]? || 0_u64).to_f64}
-                end
-                if response.read_length_type.to_s == "BasecalledBases"
-                  metrics.n50 = data.n50 > 0 ? data.n50.to_f64 : nil
-                elsif response.read_length_type.to_s == "EstimatedBases"
-                  metrics.estimated_n50 = data.n50 > 0 ? data.n50.to_f64 : nil
-                end
-              end
+              apply_histogram(metrics, response)
               @store.changed
             end
             completed = true
@@ -659,8 +693,8 @@ module MinknowTui
             last_error = ex
           end
         end
-        unless completed || !scope.active?
-          raise last_error || GRPC::StatusError.new(GRPC::StatusCode::FAILED_PRECONDITION, "No read length data yet")
+        if !completed && scope.active?
+          raise(last_error || GRPC::StatusError.new(GRPC::StatusCode::FAILED_PRECONDITION, "No read length data yet"))
         end
       end
     end
