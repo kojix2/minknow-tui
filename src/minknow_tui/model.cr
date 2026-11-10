@@ -1,7 +1,7 @@
 require "set"
 
 module MinknowTui
-  VERSION = "0.1.0"
+  VERSION = {{ `shards version "#{__DIR__}/../.."`.chomp.stringify }}
 
   # No terminal control sequences or Crysterm tags from remote/user data.
   def self.text(value) : String
