@@ -1,6 +1,7 @@
 require "crysterm"
 require "./model"
 require "./theme"
+require "./pore_map"
 
 module MinknowTui
   alias CT = Crysterm
@@ -41,7 +42,9 @@ module MinknowTui
       @body = CW::ScrollableText.new(parent: self, width: "100%", height: "100%", keys: true, vi_keys: true, parse_tags: false,
         content: "minknow-tui — read-only MinKNOW monitor\n\n" +
                  "Tab / Shift-Tab  Move focus\nj / k, arrows     Move selection / scroll\n" +
-                 "1–4               Overview / Yield / Quality / Device\n" +
+                 "1–5               Overview / Yield / Quality / Device / Pores\n" +
+                 "h (Quality)       Auto 99.5% / full read-length range\n" +
+                 "Arrows / hjkl     Select channel in Pores (Home/End, PgUp/PgDn)\n" +
                  "p                 Select position (also in compact mode)\n" +
                  "r                 Select protocol run / history\n" +
                  "a                 Select acquisition within the protocol\n" +
@@ -68,6 +71,8 @@ module MinknowTui
     getter? compact = false
     getter dialog : CT::Widget::Dialog? = nil
     getter overview : CW::ScrollableText
+    getter pores : PoreMap
+    getter? full_histogram = false
     @header : CW::Box
     @footer : CW::Box
     @outer : CW::Splitter
@@ -122,7 +127,7 @@ module MinknowTui
       @tabs.add_tab "Yield", yield_page
 
       quality_page = CW::Box.new(layout: CT::Layout::Dock.new)
-      @quality_text = CW::ScrollableText.new(parent: quality_page, height: 5, layout_hint: :top, keys: true, parse_tags: false)
+      @quality_text = CW::ScrollableText.new(parent: quality_page, height: 6, layout_hint: :top, keys: true, parse_tags: false)
       @states = CW::ScrollableText.new(parent: quality_page, height: 5, layout_hint: :bottom, keys: true, vi_keys: true, parse_tags: false)
       @histogram = CW::GraphBar.new(parent: quality_page, layout_hint: :center, bar_width: 4, bar_spacing: 1, colors: [Theme::GREEN])
       @tabs.add_tab "Quality", quality_page
@@ -134,6 +139,8 @@ module MinknowTui
       @temperature_chart.axis_y.title = "°C"
       @temperature_chart.axis_x.label_format = "%.0f"
       @tabs.add_tab "Device", device_page
+      @pores = PoreMap.new(width: "100%", height: "100%")
+      @tabs.add_tab "Pores", @pores
       @body.add_widget @sidebar
       @body.add_widget @tabs
       @body.sizes = [30, 89]
@@ -180,16 +187,18 @@ module MinknowTui
       @device_text.height = compact? ? 8 : 12
       @yield_text.height = compact? ? 6 : 7
       @states.height = compact? ? 3 : 5
-      @tabs.tab_bar.focus if compact? && !was_compact
+      show_tab(@store.tab) if compact? && !was_compact
     end
 
     def refresh
+      return if @window.destroyed?
       @refreshing = true
       @header.content = " minknow-tui | #{@store.endpoint} | Core #{@store.version} | #{@store.connection}"
-      hints = compact? ? " Tab focus  1–4 tabs  p positions  r runs  a acq  / filter  ? help  q quit" : " Tab focus  j/k move  1–4 tabs  p positions  r runs  a acq  / filter  ? help  q quit"
+      hints = compact? ? " Tab focus  1–5 tabs  p positions  r runs  a acq  / filter  ? help  q quit" : " Tab focus  j/k move  1–5 tabs  p positions  r runs  a acq  / filter  ? help  q quit"
       @footer.content = "#{hints}#{@store.filter.empty? ? "" : " | /#{@store.filter}"}"
       update_lists
       update_detail
+      @pores.refresh(@store.position) if @store.tab == 4
       update_events
       view = {@store.generation, @store.tab}
       if @last_view && @last_view != view
@@ -268,11 +277,13 @@ module MinknowTui
     end
 
     private def update_statistics(position : Position, metrics : Metrics)
+      histogram_reads = metrics.histogram.empty? ? "—" : MinknowTui.number(metrics.histogram.sum(&.count))
       @yield_text.content = "#{acquisition_label}\nPass: #{MinknowTui.number(metrics.pass_bases, "b")}  Fail: #{MinknowTui.number(metrics.fail_bases, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_bases, "b")}\n" +
                             "Acquired reads: #{MinknowTui.number(metrics.reads)}\nBasecalls pass / fail: #{MinknowTui.number(metrics.pass_calls)} / #{MinknowTui.number(metrics.fail_calls)}\n" +
                             "Basecaller processed / skipped: #{metrics.basecalling_enabled == false ? "Disabled" : percentage(metrics.processed)}\n#{capability(position, "yield")}"
       @quality_text.content = "#{acquisition_label}\nN50 basecalled: #{MinknowTui.number(metrics.n50, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
-                              "Pore occupancy: #{percentage(metrics.occupancy)}\nRead length: #{metrics.histogram_unit}; Y: read counts\n#{capability(position, "read_lengths")}"
+                              "Pore occupancy: #{percentage(metrics.occupancy)}\nRead length: #{metrics.histogram_unit}; #{histogram_reads} reads\n" +
+                              "Y: read counts | #{full_histogram? ? "Full range" : "Auto 99.5%; ≥ tail"} | h: range\n#{capability(position, "read_lengths")}"
       @states.content = "Channel time fractions (not pore counts):\n" + metrics.channel_states.map { |k, v| "#{MinknowTui.text(k)}: #{"%.1f%%" % v}" }.join("  ") + "\n#{capability(position, "duty_time")}"
     end
 
@@ -298,7 +309,7 @@ module MinknowTui
 
     private def update_charts(m : Metrics)
       # Avoid rebuilding graph chrome on every clock tick.
-      signature = {m.pass.points, m.fail.points, m.estimated.points, m.temperatures.points, m.histogram}.hash.to_s
+      signature = {m.pass.points, m.fail.points, m.estimated.points, m.temperatures.points, m.histogram, full_histogram?, @window.awidth}.hash.to_s
       return if signature == @last_chart_signature
       @last_chart_signature = signature
       @yield_chart.clear_series
@@ -309,12 +320,10 @@ module MinknowTui
       @temperature_chart.clear_series
       @temperature_chart.add_line(m.temperature_label, m.temperatures.points, Theme::WARNING) unless m.temperatures.points.empty?
       @temperature_chart.refresh
-      # Graph::Bar otherwise truncates to the tail. Aggregate adjacent buckets
-      # so the whole distribution remains visible at narrow widths.
       capacity = Math.max(1, (@window.awidth - (compact? ? 4 : 34)) // 5)
-      groups = m.histogram.each_slice(Math.max(1, (m.histogram.size + capacity - 1) // capacity)).to_a
-      @histogram.values = groups.map { |group| group.sum(&.[1]) }
-      @histogram.labels = groups.map { |group| group.first[0].split('–').first.gsub(".00", "").delete(' ') }
+      bars = m.histogram_bars(capacity, full_histogram?)
+      @histogram.values = bars.map(&.count)
+      @histogram.labels = bars.map(&.label)
     end
 
     private def update_events
@@ -337,7 +346,7 @@ module MinknowTui
       dialog.on(CT::Event::Finished) do
         @dialog = nil
         dialog.destroy
-        @tabs.tab_bar.focus
+        show_tab(@store.tab)
         refresh
       end
       dialog.open
@@ -378,29 +387,42 @@ module MinknowTui
       case event.char
       when 'q'
         @window.quit
-      when '1', '2', '3', '4'
-        @tabs.current_index = event.char.to_i - '1'.to_i
-        @store.tab = @tabs.current_index
-        @tabs.tab_bar.focus
+      when '1'..'5'
+        show_tab(event.char.to_i - '1'.to_i)
+      when 'h'
+        return unless @store.tab == 2
+        @full_histogram = !@full_histogram
       when 'p' then pick_position
       when 'r' then pick_run
       when 'a' then pick_acquisition
       when '?' then track HelpDialog.new(@window)
-      when '/'
-        dialog = CW::InputDialog.new(parent: @window, width: "90%", height: 8, parse_tags: false)
-        @dialog = dialog
-        dialog.open("Filter positions and runs:", @store.filter) do |value|
-          @store.filter = value if value
-          @dialog = nil
-          dialog.destroy
-          refresh
-        end
+      when '/' then filter_dialog
       else
         return unless control_key(event.key)
       end
       event.accept
       @store.changed
-      refresh unless @window.destroyed?
+      refresh
+    end
+
+    private def show_tab(index : Int32)
+      # Move focus before hiding a page: Crysterm's focus rewind can otherwise
+      # reselect the old tab while a page switch is still in progress.
+      @tabs.tab_bar.focus
+      @tabs.current_index = index
+      @store.tab = @tabs.current_index
+      @store.tab == 4 ? @pores.focus : @tabs.tab_bar.focus
+    end
+
+    private def filter_dialog
+      dialog = CW::InputDialog.new(parent: @window, width: "90%", height: 8, parse_tags: false)
+      @dialog = dialog
+      dialog.open("Filter positions and runs:", @store.filter) do |value|
+        @store.filter = value if value
+        @dialog = nil
+        dialog.destroy
+        refresh
+      end
     end
   end
 end

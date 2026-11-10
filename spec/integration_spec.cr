@@ -2,6 +2,41 @@ require "spec"
 require "./support/fake_minknow"
 
 describe "MinKNOW compatibility over local HTTP/2" do
+  it "streams live channels independently of selected history and unsubscribes on tab changes" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each(&.channels_available=(true))
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      store.select_run("old")
+      store.tab = 4
+      position = store.positions["X1"]
+      wait_for { position.pore_states[1]?.try(&.name) == "unblocking" }
+      position.pore_states.size.should eq(1)
+      position.pore_states[1].well.should eq(2)
+      store.acquisition_id.should eq("old-seq")
+      position.current_acquisition.should eq("current-seq")
+      calls.should contain("channels:1-512")
+      store.tab = 0
+      sleep 0.2.seconds
+      count = calls.count(&.ends_with?("/get_channel_states"))
+      sleep 1.2.seconds
+      calls.count(&.ends_with?("/get_channel_states")).should eq(count)
+    end
+  end
+
+  it "reports an unsupported live channel API while keeping run monitoring usable" do
+    with_fake_minknow do |api, store, _, _|
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      store.tab = 4
+      wait_for { store.position.try(&.capabilities["channels"]?) == "Unsupported" }
+      store.tab = 0
+      wait_for { store.detail.reads == 100_i64 }
+    end
+  end
+
   it "uses histogram N50 as a fallback and decodes overlapping yield, quality and temperature streams" do
     with_fake_minknow do |api, store, peers, _|
       peers.each(&.statistics_available=(true))
@@ -15,7 +50,7 @@ describe "MinKNOW compatibility over local HTTP/2" do
       store.tab = 2
       wait_for { store.detail.occupancy == 0.75 }
       store.detail.channel_states["strand"].should eq(75.0)
-      store.detail.histogram.first[1].should eq(7.0)
+      store.detail.histogram.first.count.should eq(7.0)
       store.tab = 3
       wait_for { store.detail.temperatures.points.size == 3 }
       store.detail.temperatures.points.should eq([{0.0, 35.0}, {60.0, 36.0}, {120.0, 37.0}])

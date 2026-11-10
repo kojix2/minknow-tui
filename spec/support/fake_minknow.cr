@@ -10,6 +10,7 @@ class FakeMinKnow < GRPC::Service
   property? empty = false
   property? active_run = true
   property? statistics_available = false
+  property? channels_available = false
 
   def initialize(@service_full_name : String, @port : Int32, @calls = [] of String)
   end
@@ -44,7 +45,7 @@ class FakeMinKnow < GRPC::Service
                  sleep 0.5.seconds if slow_old_summary? && id.starts_with?("old")
                  acquisition(id)
                when {"minknow_api.device.DeviceService", "get_flow_cell_info"}
-                 MA::Device::GetFlowCellInfoResponse.new.tap { |reply| reply.has_flow_cell = true; reply.flow_cell_id = "TEST001" }
+                 MA::Device::GetFlowCellInfoResponse.new.tap { |reply| reply.has_flow_cell = true; reply.flow_cell_id = "TEST001"; reply.channel_count = 512_u32 }
                when {"minknow_api.device.DeviceService", "get_device_info"}
                  MA::Device::GetDeviceInfoResponse.new.tap(&.device_id=("FIXTURE"))
                when {"minknow_api.device.DeviceService", "get_temperature"}
@@ -62,12 +63,28 @@ class FakeMinKnow < GRPC::Service
 
   def server_streaming?(method : String) : Bool
     {"flow_cell_positions", "watch_flow_cell_positions", "stream_instance_activity", "stream_notifications", "get_user_messages",
-     "stream_acquisition_output", "stream_duty_time", "stream_read_length_histogram", "stream_temperature"}.includes?(method)
+     "stream_acquisition_output", "stream_duty_time", "stream_read_length_histogram", "stream_temperature", "get_channel_states"}.includes?(method)
   end
 
   def dispatch_server_stream(method : String, request : Bytes, ctx : GRPC::ServerContext, writer : GRPC::RawResponseStream) : GRPC::Status
     @calls << "#{service_full_name}/#{method}"
     return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authenticated?
+    if method == "get_channel_states" && channels_available?
+      channel_request = MA::Data::GetChannelStatesRequest.decode(request)
+      @calls << "channels:#{channel_request.first_channel}-#{channel_request.last_channel}"
+      ["pore", "unblocking"].each_with_index do |state, index|
+        response = MA::Data::GetChannelStatesResponse.new
+        response.channel_states = [MA::Data::GetChannelStatesResponse::ChannelStateData.new.tap do |value|
+          value.channel = 1_u32
+          value.state_name = state
+          value.acquisition_raw_index = (100 + index).to_u64
+          value.config = MA::Device::ReturnedChannelConfiguration.new.tap(&.well=(2_u32))
+        end]
+        writer.send_raw(response.encode)
+      end
+      writer.send_raw(MA::Data::GetChannelStatesResponse.new.encode)
+      return GRPC::Status.ok
+    end
     if statistics_available? && service_full_name == "minknow_api.statistics.StatisticsService"
       return statistics_stream(method, request, writer)
     end
@@ -164,7 +181,7 @@ def with_fake_minknow(&)
   port = listener.local_address.port
   listener.close
   calls = [] of String
-  peers = %w[manager.Manager instance.Instance device.Device protocol.Protocol acquisition.Acquisition statistics.Statistics notifications.Notifications log.Log].map do |name|
+  peers = %w[manager.Manager instance.Instance device.Device protocol.Protocol acquisition.Acquisition statistics.Statistics notifications.Notifications log.Log data.Data].map do |name|
     FakeMinKnow.new("minknow_api.#{name}Service", port, calls)
   end
   server = GRPC::Server.new

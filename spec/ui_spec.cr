@@ -94,6 +94,44 @@ describe "minknow-tui headless UI" do
   end
 
   [{120, 36}, {80, 24}].each do |size|
+    it "navigates live channels and a 3000-channel device at #{size}" do
+      with_ui(size[0], size[1]) do |store, demo, interface, window|
+        window.press('5')
+        demo.update
+        interface.refresh
+        window.repaint
+        window.dump.to_s.should contain("LIVE X1")
+        window.dump.to_s.should contain("Channel 1/512")
+        window.press(Tput::Key::Right)
+        interface.pores.selected_channel.should eq(2)
+        window.press('h')
+        interface.pores.selected_channel.should eq(1)
+        window.press(Tput::Key::End)
+        interface.pores.selected_channel.should eq(512)
+        store.select_run("demo-X1-protocol-1")
+        demo.update
+        interface.refresh
+        window.repaint
+        interface.pores.info.content.should contain("demo-X1-protocol-0-sequencing")
+        store.select_position("X2")
+        demo.update
+        interface.refresh
+        window.repaint
+        window.press(Tput::Key::End)
+        interface.pores.selected_channel.should eq(3000)
+        interface.pores.grid.child_base.should be > 0
+        window.press(Tput::Key::Home)
+        interface.pores.selected_channel.should eq(1)
+        window.press('3')
+        interface.tabs.current_index.should eq(2)
+        interface.refresh
+        window.repaint
+        interface.pores.visible?.should be_false
+        window.dump.to_s.should_not contain("LIVE X2")
+        window.dump.to_s.should contain("Read length")
+      end
+    end
+
     it "switches iTerm2 tabs immediately without image layers at #{size}" do
       backend = Crysterm::Config.media_backend
       Crysterm::Config.set "media.backend", Crysterm::Widget::Media::Backend::Auto
@@ -152,6 +190,12 @@ describe "minknow-tui headless UI" do
         window.repaint
         store.tab.should eq(2)
         window.dump.to_s.should contain("Read length")
+        window.press('h')
+        window.repaint
+        window.dump.to_s.should contain("Full range")
+        window.press('h')
+        window.repaint
+        window.dump.to_s.should contain("Auto 99.5%")
         window.press('a')
         window.repaint
         interface.dialog.should_not be_nil

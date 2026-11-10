@@ -16,6 +16,51 @@ describe MinknowTui::Series do
   end
 end
 
+describe MinknowTui::Metrics do
+  it "zooms past a long sparse tail without discarding reads or changing N50" do
+    metrics = MinknowTui::Metrics.new
+    metrics.n50 = 12000.0
+    metrics.histogram = (0...1000).map do |index|
+      MinknowTui::HistogramBin.new(index * 1000.0, (index + 1) * 1000.0,
+        index < 30 ? 1000.0 : index == 900 ? 1.0 : 0.0)
+    end
+    bars = metrics.histogram_bars(16)
+    bars.size.should be <= 16
+    bars.count { |bin| bin.count > 0 }.should be > 8
+    bars[-2].upper.should eq(30000)
+    bars.last.upper.infinite?.should_not be_nil
+    bars.last.count.should eq(1)
+    bars.sum(&.count).should eq(30001)
+    metrics.n50.should eq(12000)
+    full = metrics.histogram_bars(16, full_range: true)
+    full.last.upper.should eq(901000)
+    full.sum(&.count).should eq(30001)
+    metrics.histogram_bars(1).size.should eq(1)
+  end
+
+  it "does not invent a distribution when the API supplies no reads or one coarse bin" do
+    metrics = MinknowTui::Metrics.new
+    metrics.histogram_bars(16).should be_empty
+    metrics.histogram = [MinknowTui::HistogramBin.new(0.0, 41000.0, 200.0)]
+    metrics.histogram_bars(16).should eq(metrics.histogram)
+  end
+end
+
+describe MinknowTui::Position do
+  it "replaces sparse channel updates, bounds IDs and ignores older samples" do
+    position = MinknowTui::Position.new("X1")
+    position.channels = 512_u32
+    position.update_channel(1, MinknowTui::ChannelState.new("pore", 1_u32, 100_u64))
+    position.update_channel(2, MinknowTui::ChannelState.new("strand", 2_u32, 100_u64))
+    position.update_channel(1, MinknowTui::ChannelState.new("unblocking", 1_u32, 110_u64))
+    position.update_channel(1, MinknowTui::ChannelState.new("pore", 1_u32, 90_u64))
+    position.update_channel(513, MinknowTui::ChannelState.new("strand"))
+    position.pore_states.size.should eq(2)
+    position.pore_states[1].name.should eq("unblocking")
+    position.pore_states[2].well.should eq(2)
+  end
+end
+
 describe MinknowTui::Store do
   it "defaults to current acquisition, preserves historical selection and invalidates old producers" do
     store = MinknowTui::Store.new

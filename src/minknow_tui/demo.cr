@@ -24,10 +24,9 @@ module MinknowTui
         p.flow_cell = index < 2 ? "ABC1234#{index}" : ""
         p.product = "FLO-MIN114"
         p.device = "DEMO-#{name}"
-        p.device_type = "MinION"
+        p.device_type, p.channels = index == 1 ? {"PromethION", 3000_u32} : {"MinION", 512_u32}
         p.simulated = true
         p.port = 8000 + index
-        p.channels = 512_u32
         p.connected = index != 3
         p.live.temperature = 35.1
         p.live.temperature_label = "Heatsink"
@@ -73,6 +72,7 @@ module MinknowTui
 
     def update
       @tick += 1
+      update_channels if @store.tab == 4
       if @generation != @store.generation || @tab != @store.tab
         @generation = @store.generation
         @tab = @store.tab
@@ -110,8 +110,12 @@ module MinknowTui
       m.temperature = 35.1
       m.temperature_label = "Heatsink"
       m.channel_states = {"strand" => 78.0, "pore" => 12.0, "unavailable" => 7.0, "other" => 3.0}
-      m.histogram_unit = "Basecalled bases"
-      m.histogram = (0...24).map { |i| {"#{i * 2}k", (Math.exp(-((i - 5.0) ** 2) / 32.0) * 120_000).round} }
+      m.histogram_unit = "basecalled bp"
+      m.histogram = (0...1000).map do |i|
+        count = (Math.exp(-((i - 10.0) ** 2) / 50.0) * 120_000).round
+        count = 500.0 if i == 900
+        HistogramBin.new(i * 1000.0, (i + 1) * 1000.0, count)
+      end
       120.times do |i|
         m.pass.put(i * 60, pass_bases * i / 119.0)
         m.fail.put(i * 60, fail_bases * i / 119.0)
@@ -121,6 +125,36 @@ module MinknowTui
       m.updated_at = Time.utc
       if p = @store.position
         %w[activity history temperature detail.summary detail.yield detail.n50 detail.read_lengths detail.duty_time detail.temperature_history].each { |key| p.capabilities[key] = "Available [DEMO]" }
+      end
+    end
+
+    private def update_channels
+      return unless p = @store.position
+      unless p.current_acquisition && p.has_flow_cell && p.connected?
+        p.capabilities["channels"] = "No active acquisition [DEMO]"
+        return
+      end
+      if p.pore_states.empty?
+        seed_channels(p)
+      end
+      channel = @tick % p.channels.to_i + 1
+      p.update_channel(channel, ChannelState.new(@tick.even? ? "strand" : "unblocking", 1_u32))
+      p.pore_updated_at = Time.utc
+      p.capabilities["channels"] = "Available [DEMO]"
+    end
+
+    private def seed_channels(p : Position)
+      p.channels.to_i.times do |index|
+        state = case index % 100
+                when 0...58  then "strand"
+                when 58...66 then "pore"
+                when 66...88 then "no_pore"
+                when 88...93 then "unblocking"
+                when 93...95 then "adapter"
+                when 95...98 then "unavailable"
+                else              "unclassified"
+                end
+        p.update_channel(index + 1, ChannelState.new(state, (index % 4 + 1).to_u32))
       end
     end
   end

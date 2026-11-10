@@ -5,6 +5,7 @@ require "minknow/src/generated/minknow_api/notifications.pb"
 require "minknow/src/generated/minknow_api/notifications.grpc"
 require "minknow/src/generated/minknow_api/log.pb"
 require "minknow/src/generated/minknow_api/log.grpc"
+require "minknow/src/generated/minknow_api/data.grpc"
 require "./model"
 require "./options"
 
@@ -38,6 +39,10 @@ module MinknowTui
     end
 
     def flow_cell(p : Position, value : MinknowApi::Device::GetFlowCellInfoResponse)
+      if p.flow_cell != value.flow_cell_id || p.has_flow_cell != value.has_flow_cell
+        p.pore_states.clear
+        p.pore_updated_at = nil
+      end
       p.has_flow_cell = value.has_flow_cell
       p.flow_cell = MinknowTui.text(value.flow_cell_id)
       p.product = MinknowTui.text(value.product_code)
@@ -363,6 +368,8 @@ module MinknowTui
           p.current_acquisition = nil
           p.runs.clear
           p.live = Metrics.new
+          p.pore_states.clear
+          p.pore_updated_at = nil
           p.connected = false
           @store.reset_detail if @store.position_id == raw.name
         end
@@ -403,7 +410,11 @@ module MinknowTui
     private def apply_acquisition(p : Position, raw : MA::Acquisition::AcquisitionRunInfo)
       return if raw.run_id.empty?
       id = raw.end_time ? nil : raw.run_id
-      p.live = Metrics.new if id != p.current_acquisition
+      if id != p.current_acquisition
+        p.live = Metrics.new
+        p.pore_states.clear
+        p.pore_updated_at = nil
+      end
       p.current_acquisition = id
       p.live.basecalling_enabled = raw.config_summary.try(&.basecalling_enabled)
       raw.yield_summary.try { |summary| Decode.summary(p.live, summary) }
@@ -526,7 +537,44 @@ module MinknowTui
       @selection_generation = @store.generation
       @selected_tab = @store.tab
       if entry = @positions[@store.position_id]?
-        start_detail(entry[0], @details, entry[2]) if @store.acquisition_id
+        if @store.tab == 4
+          start_channels(entry[0], @details, entry[2])
+        elsif @store.acquisition_id
+          start_detail(entry[0], @details, entry[2])
+        end
+      end
+    end
+
+    private def start_channels(p : Position, scope : Scope, ch : GRPC::Channel)
+      client = MA::Data::DataService::Client.new(ch)
+      watch(scope, p.capabilities, "channels") do
+        while scope.active? && (p.channels == 0 || p.has_flow_cell == false)
+          p.capabilities["channels"] = p.has_flow_cell == false ? "No flow cell" : "Waiting for channel count"
+          @store.changed
+          scope.pause(0.5.seconds)
+        end
+        next unless scope.active?
+        request = MA::Data::GetChannelStatesRequest.new
+        request.first_channel = 1_u32
+        request.last_channel = p.channels
+        request.wait_for_processing = true
+        p.capabilities["channels"] = "Waiting for acquisition / channel snapshot"
+        @store.changed
+        first = true
+        consume(scope, client.get_channel_states(request, stream_context)) do |response|
+          unless response.channel_states.empty?
+            p.pore_states.clear if first
+            first = false
+            response.channel_states.each do |state|
+              name = state.state_case.state_name? ? MinknowTui.text(state.state_name) : "Unknown(#{state.state_id})"
+              p.update_channel(state.channel.to_i, ChannelState.new(name, state.config.try(&.well) || 0_u32,
+                state.acquisition_raw_index, state.analysis_raw_index))
+            end
+            p.pore_updated_at = Time.utc
+          end
+          p.capabilities["channels"] = "Available"
+          @store.changed
+        end
       end
     end
 
@@ -648,10 +696,15 @@ module MinknowTui
     end
 
     private def apply_histogram(metrics, response)
-      metrics.histogram_unit = Decode.name(response.read_length_type)
+      metrics.histogram_unit = case response.read_length_type.raw
+                               when 2 then "basecalled bp"
+                               when 1 then "estimated bp"
+                               when 0 then "MinKNOW events"
+                               else        Decode.name(response.read_length_type)
+                               end
       if data = response.histogram_data.first?
         metrics.histogram = response.bucket_ranges.map_with_index do |bucket, index|
-          {"#{MinknowTui.number(bucket.start)}–#{MinknowTui.number(bucket.end_)}", (data.bucket_values[index]? || 0_u64).to_f64}
+          HistogramBin.new(bucket.start.to_f64, bucket.end_.to_f64, (data.bucket_values[index]? || 0_u64).to_f64)
         end
         if response.read_length_type.to_s == "BasecalledBases"
           metrics.n50 = data.n50 > 0 ? data.n50.to_f64 : nil

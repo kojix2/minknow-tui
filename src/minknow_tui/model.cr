@@ -46,6 +46,16 @@ module MinknowTui
     end
   end
 
+  record HistogramBin, lower : Float64, upper : Float64, count : Float64 do
+    def label : String
+      value = MinknowTui.number(lower).gsub(".00", "").delete(' ')
+      upper.finite? ? value : "≥#{value}"
+    end
+  end
+
+  record ChannelState, name : String, well : UInt32 = 0_u32,
+    acquisition_index : UInt64 = 0_u64, analysis_index : UInt64 = 0_u64
+
   class Metrics
     property basecalling_enabled : Bool? = nil
     property reads : Int64? = nil
@@ -60,7 +70,7 @@ module MinknowTui
     property processed : Float64? = nil
     property temperature : Float64? = nil
     property temperature_label = "Temperature"
-    property histogram = [] of Tuple(String, Float64)
+    property histogram = [] of HistogramBin
     property histogram_unit = "bases"
     property channel_states = {} of String => Float64
     getter pass = Series.new
@@ -68,6 +78,31 @@ module MinknowTui
     getter estimated = Series.new
     getter temperatures = Series.new
     property updated_at : Time? = nil
+
+    # Keep outliers visible as an overflow bin without coarsening the main
+    # distribution to the longest read. Counts and the API's N50 are unchanged.
+    def histogram_bars(capacity : Int32, full_range = false) : Array(HistogramBin)
+      full_range ||= capacity < 2
+      last = histogram.rindex { |bin| bin.count > 0 }
+      return [] of HistogramBin unless last
+      source = histogram.first(last + 1)
+      source = source.skip(source.index { |bin| bin.count > 0 } || 0) unless full_range
+      total = source.sum(&.count)
+      cutoff = source.size - 1
+      unless full_range
+        cumulative = 0.0
+        cutoff = source.index { |bin| (cumulative += bin.count) >= total * 0.995 } || cutoff
+      end
+      tail = source.skip(cutoff + 1).sum(&.count)
+      slots = Math.max(1, capacity - (tail > 0 ? 1 : 0))
+      main = source.first(cutoff + 1)
+      width = Math.max(1, (main.size + slots - 1) // slots)
+      bars = main.each_slice(width).map do |group|
+        HistogramBin.new(group.first.lower, group.last.upper, group.sum(&.count))
+      end.to_a
+      bars << HistogramBin.new(main.last.upper, Float64::INFINITY, tail) if tail > 0
+      bars
+    end
   end
 
   class Run
@@ -116,6 +151,16 @@ module MinknowTui
     property updated_at : Time? = nil
     getter runs = {} of String => Run
     getter capabilities = {} of String => String
+    getter pore_states = {} of Int32 => ChannelState
+    property pore_updated_at : Time? = nil
+
+    def update_channel(channel : Int32, value : ChannelState)
+      return unless channel > 0 && channel <= channels
+      if old = pore_states[channel]?
+        return if {value.acquisition_index, value.analysis_index} < {old.acquisition_index, old.analysis_index}
+      end
+      pore_states[channel] = value
+    end
 
     def initialize(@name)
     end
