@@ -1,0 +1,78 @@
+version: 2.0
+shards:
+  crystallabs-helpers:
+    git: https://github.com/crystallabs/crystallabs-helpers.cr.git
+    version: 1.1.2
+
+  crysterm:
+    git: https://github.com/crystallabs/crysterm.git
+    version: 1.6.2
+
+  event_handler:
+    git: https://github.com/crystallabs/event_handler.git
+    version: 2.5.0
+
+  gpm:
+    git: https://github.com/crystallabs/gpm.cr.git
+    version: 2.1.0
+
+  grpc:
+    git: https://github.com/kojix2/grpc.git
+    version: 0.1.0+git.commit.8955cbfe3ab2eaa7c257e89e56947f57d243fe36
+
+  html5:
+    git: https://github.com/naqvis/crystal-html5.git
+    version: 0.7.0
+
+  markd:
+    git: https://github.com/icyleaf/markd.git
+    version: 0.6.0
+
+  minknow:
+    git: https://github.com/kojix2/minknow.git
+    version: 0.1.0+git.commit.72f8f7caf4fe475018cd83c12a0206d0c9c4629e
+
+  msgpack:
+    git: https://github.com/crystal-community/msgpack-crystal.git
+    version: 1.3.5
+
+  pnggif:
+    git: https://github.com/crystallabs/pnggif.git
+    version: 0.1.3
+
+  proto:
+    git: https://github.com/kojix2/proto.git
+    version: 0.1.0+git.commit.931f27162defaab7c8834319c26aade399827c04
+
+  superconf:
+    git: https://github.com/crystallabs/superconf.cr.git
+    version: 0.4.0
+
+  term-screen:
+    git: https://github.com/crystal-term/screen.git
+    version: 1.0.0
+
+  term_colors:
+    git: https://github.com/crystallabs/term_colors.git
+    version: 2.0.2
+
+  tput:
+    git: https://github.com/crystallabs/tput.git
+    version: 2.3.1
+
+  unibilium:
+    git: https://github.com/crystallabs/unibilium.cr.git
+    version: 2.2.0
+
+  unibilium-shim:
+    git: https://github.com/crystallabs/unibilium-shim.cr.git
+    version: 2.0.4
+
+  w3m_image_display:
+    git: https://github.com/samuallb/w3mimagedisplay.git
+    version: 0.1.2
+
+  xpath2:
+    git: https://github.com/naqvis/crystal-xpath2.git
+    version: 0.2.0
+

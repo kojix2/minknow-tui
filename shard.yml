@@ -1,0 +1,13 @@
+name: minknow-tui
+version: 0.1.0
+crystal: ">= 1.20.0"
+
+targets:
+  minknow-tui:
+    main: src/main.cr
+
+dependencies:
+  minknow:
+    github: kojix2/minknow
+  crysterm:
+    github: crystallabs/crysterm
