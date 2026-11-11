@@ -17,7 +17,7 @@ describe MinknowTui::Series do
 end
 
 describe MinknowTui::Metrics do
-  it "zooms past a long sparse tail without discarding reads or changing N50" do
+  it "trims one percent from each end for display without changing N50" do
     metrics = MinknowTui::Metrics.new
     metrics.n50 = 12000.0
     metrics.histogram = (0...1000).map do |index|
@@ -27,10 +27,9 @@ describe MinknowTui::Metrics do
     bars = metrics.histogram_bars(16)
     bars.size.should be <= 16
     bars.count { |bin| bin.count > 0 }.should be > 8
-    bars[-2].upper.should eq(30000)
-    bars.last.upper.infinite?.should_not be_nil
-    bars.last.count.should eq(1)
-    bars.sum(&.count).should eq(30001)
+    bars.first.count.should be < 2000
+    bars.last.upper.should eq(30000)
+    bars.sum(&.count).should be_close(29400.98, 0.01)
     metrics.n50.should eq(12000)
     full = metrics.histogram_bars(16, full_range: true)
     full.last.upper.should eq(901000)
@@ -38,11 +37,41 @@ describe MinknowTui::Metrics do
     metrics.histogram_bars(1).size.should eq(1)
   end
 
+  it "replaces overlapping duty buckets and groups history at five minutes after 48 minutes" do
+    metrics = MinknowTui::Metrics.new
+    metrics.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "", "#52d687", "Sequencing", 1_u32)
+    metrics.state_styles["adapter"] = MinknowTui::StateStyle.new("Adapter", "", "#52d687", "Sequencing", 2_u32)
+    metrics.put_duty(MinknowTui::DutyBucket.new(0, 60, {"strand" => 3.0, "adapter" => 1.0}))
+    metrics.put_duty(MinknowTui::DutyBucket.new(0, 60, {"strand" => 2.0, "adapter" => 2.0}))
+    metrics.activity_buckets.first.states["Sequencing"].should eq(100.0)
+    metrics.activity_buckets(true, false).first.states.should eq({"strand" => 2.0, "adapter" => 2.0})
+    metrics.sample_rate = 2_u32
+    metrics.activity_buckets(true, false).first.states.should eq({"strand" => 1.0, "adapter" => 1.0})
+    metrics.put_duty(MinknowTui::DutyBucket.new(2880, 2940, {"strand" => 4.0}))
+    metrics.activity_buckets.size.should eq(2)
+    metrics.activity_buckets.first.finish.should eq(300)
+  end
+
+  it "normalizes API state and group colors for terminal rendering" do
+    style = MinknowTui::StateStyle.new("", "", "12AbEF", "", 0_u32, "#112233")
+    style.terminal_colour.should eq("#12AbEF")
+    style.group_terminal_colour.should eq("#112233")
+    MinknowTui::StateStyle.normalize_colour("bad{tag}").should be_nil
+  end
+
   it "does not invent a distribution when the API supplies no reads or one coarse bin" do
     metrics = MinknowTui::Metrics.new
     metrics.histogram_bars(16).should be_empty
     metrics.histogram = [MinknowTui::HistogramBin.new(0.0, 41000.0, 200.0)]
-    metrics.histogram_bars(16).should eq(metrics.histogram)
+    metrics.histogram_bars(16).first.count.should eq(196.0)
+  end
+
+  it "keeps empty bins between populated read-length ranges" do
+    metrics = MinknowTui::Metrics.new
+    metrics.histogram = [MinknowTui::HistogramBin.new(0.0, 1.0, 10.0),
+                         MinknowTui::HistogramBin.new(1.0, 2.0, 0.0),
+                         MinknowTui::HistogramBin.new(2.0, 3.0, 10.0)]
+    metrics.histogram_bars(3, full_range: true).map(&.count).should eq([10.0, 0.0, 10.0])
   end
 end
 
@@ -62,6 +91,22 @@ describe MinknowTui::Position do
 end
 
 describe MinknowTui::Store do
+  it "clears stale detail status on selection and tab changes while retaining unsupported APIs" do
+    store = MinknowTui::Store.new
+    position = MinknowTui::Position.new("X1")
+    store.positions[position.name] = position
+    store.select_position("X1")
+    position.capabilities["detail.yield"] = "Available"
+    position.capabilities["detail.bias"] = "Unsupported"
+    store.select_acquisition("other")
+    position.capabilities.has_key?("detail.yield").should be_false
+    position.capabilities["detail.bias"].should eq("Unsupported")
+    position.capabilities["detail.qscore"] = "Available"
+    store.tab = 2
+    position.capabilities.has_key?("detail.qscore").should be_false
+    position.capabilities["detail.bias"].should eq("Unsupported")
+  end
+
   it "defaults to current acquisition, preserves historical selection and invalidates old producers" do
     store = MinknowTui::Store.new
     position = MinknowTui::Position.new("X1")

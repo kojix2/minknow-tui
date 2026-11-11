@@ -42,8 +42,10 @@ module MinknowTui
       @body = CW::ScrollableText.new(parent: self, width: "100%", height: "100%", keys: true, vi_keys: true, parse_tags: false,
         content: "minknow-tui — read-only MinKNOW monitor\n\n" +
                  "Tab / Shift-Tab  Move focus\nj / k, arrows     Move selection / scroll\n" +
-                 "1–5               Overview / Yield / Quality / Device / Pores\n" +
-                 "h (Quality)       Auto 99.5% / full read-length range\n" +
+                 "1–6               Overview / Yield / Quality / Device / Pores / Activity\n" +
+                 "v (Quality/Device) Change graph\n" +
+                 "h (Quality)       Trim 1% each end / full read-length range\n" +
+                 "d / u (Activity) Detailed/grouped states; percent/absolute\n" +
                  "Arrows / hjkl     Select channel in Pores (Home/End, PgUp/PgDn)\n" +
                  "p                 Select position (also in compact mode)\n" +
                  "r                 Select protocol run / history\n" +
@@ -83,13 +85,23 @@ module MinknowTui
     @device_text : CW::ScrollableText
     @yield_chart : CW::GraphLineChart
     @temperature_chart : CW::GraphLineChart
+    @bias_chart : CW::GraphLineChart
+    @qscore_chart : CW::GraphLineChart
     @histogram : CW::GraphBar
+    @qscore_histogram : CW::GraphBar
+    @activity_text : CW::ScrollableText
+    getter activity_chart : CW::GraphStackedBar
     @states : CW::ScrollableText
+    getter quality_mode = 0
+    getter device_mode = 0
+    @activity_detailed = false
+    @activity_percent = true
     @position_keys = [] of String?
     @run_keys = [] of String
     @event_keys = [] of String
     @refreshing = false
     @last_chart_signature = ""
+    @last_activity_signature : UInt64? = nil
     @last_view : Tuple(UInt64, Int32)?
 
     def initialize(@store : Store, window : CT::Window? = nil)
@@ -121,7 +133,7 @@ module MinknowTui
       @yield_text = CW::ScrollableText.new(parent: yield_page, height: 7, layout_hint: :top, keys: true, parse_tags: false)
       @yield_chart = CW::GraphLineChart.new(parent: yield_page, title: "Yield (bases)", type: graph_type, layout_hint: :center)
       @yield_chart.axis_x.title = "Acquisition seconds"
-      @yield_chart.axis_y.title = "Bases"
+      @yield_chart.axis_y.title = "bp"
       @yield_chart.axis_x.label_format = "%.0f"
       @yield_chart.axis_y.label_format = "%.2g"
       @tabs.add_tab "Yield", yield_page
@@ -130,17 +142,31 @@ module MinknowTui
       @quality_text = CW::ScrollableText.new(parent: quality_page, height: 6, layout_hint: :top, keys: true, parse_tags: false)
       @states = CW::ScrollableText.new(parent: quality_page, height: 5, layout_hint: :bottom, keys: true, vi_keys: true, parse_tags: false)
       @histogram = CW::GraphBar.new(parent: quality_page, layout_hint: :center, bar_width: 4, bar_spacing: 1, colors: [Theme::GREEN])
+      @qscore_histogram = CW::GraphBar.new(parent: quality_page, layout_hint: :center, bar_width: 3, bar_spacing: 1, colors: [Theme::TURQUOISE])
+      @qscore_chart = CW::GraphLineChart.new(parent: quality_page, title: "Q score over time", type: graph_type, layout_hint: :center)
+      @qscore_chart.axis_x.title = "Acquisition seconds"
+      @qscore_chart.axis_y.title = "Q"
+      @qscore_chart.axis_x.label_format = "%.0f"
       @tabs.add_tab "Quality", quality_page
 
       device_page = CW::Box.new(layout: CT::Layout::Dock.new)
-      @device_text = CW::ScrollableText.new(parent: device_page, height: 12, layout_hint: :top, keys: true, vi_keys: true, parse_tags: false)
+      @device_text = CW::ScrollableText.new(parent: device_page, height: 8, layout_hint: :top, keys: true, vi_keys: true, parse_tags: false)
       @temperature_chart = CW::GraphLineChart.new(parent: device_page, title: "Temperature history", type: graph_type, layout_hint: :center)
       @temperature_chart.axis_x.title = "Acquisition seconds"
       @temperature_chart.axis_y.title = "°C"
       @temperature_chart.axis_x.label_format = "%.0f"
+      @bias_chart = CW::GraphLineChart.new(parent: device_page, title: "Bias voltage history", type: graph_type, layout_hint: :center)
+      @bias_chart.axis_x.title = "Acquisition seconds"
+      @bias_chart.axis_y.title = "mV"
+      @bias_chart.axis_x.label_format = "%.0f"
       @tabs.add_tab "Device", device_page
       @pores = PoreMap.new(width: "100%", height: "100%")
       @tabs.add_tab "Pores", @pores
+      activity_page = CW::Box.new(layout: CT::Layout::Dock.new)
+      @activity_text = CW::ScrollableText.new(parent: activity_page, height: 5, layout_hint: :top, keys: true, parse_tags: false)
+      @activity_chart = CW::GraphStackedBar.new(parent: activity_page, layout_hint: :center, bar_width: 1, bar_spacing: 0)
+      @tabs.add_tab "Activity", activity_page
+      update_graph_visibility
       @body.add_widget @sidebar
       @body.add_widget @tabs
       @body.sizes = [30, 89]
@@ -184,7 +210,7 @@ module MinknowTui
       compact? ? @sidebar.hide : @sidebar.show
       @events_view.height = compact? ? 5 : 7
       @outer.sizes = [Math.max(@window.aheight - (compact? ? 8 : 10), 1), compact? ? 5 : 7]
-      @device_text.height = compact? ? 8 : 12
+      @device_text.height = compact? ? 7 : 8
       @yield_text.height = compact? ? 6 : 7
       @states.height = compact? ? 3 : 5
       show_tab(@store.tab) if compact? && !was_compact
@@ -194,7 +220,7 @@ module MinknowTui
       return if @window.destroyed?
       @refreshing = true
       @header.content = " minknow-tui | #{@store.endpoint} | Core #{@store.version} | #{@store.connection}"
-      hints = compact? ? " Tab focus  1–5 tabs  p positions  r runs  a acq  / filter  ? help  q quit" : " Tab focus  j/k move  1–5 tabs  p positions  r runs  a acq  / filter  ? help  q quit"
+      hints = compact? ? " Tab focus  1–6 tabs  v graph  p positions  r runs  a acq  ? help  q quit" : " Tab focus  j/k move  1–6 tabs  v graph  p positions  r runs  a acq  / filter  ? help  q quit"
       @footer.content = "#{hints}#{@store.filter.empty? ? "" : " | /#{@store.filter}"}"
       update_lists
       update_detail
@@ -237,6 +263,7 @@ module MinknowTui
         @yield_text.content = "Select a position and protocol run."
         @quality_text.content = "Select a position and protocol run."
         @device_text.content = @store.capabilities.map { |k, v| "#{k}: #{v}" }.join("\n")
+        @activity_text.content = "Select a position and protocol run."
         clear_charts
         return
       end
@@ -244,6 +271,7 @@ module MinknowTui
       update_overview(position, metrics)
       update_statistics(position, metrics)
       update_device(position, metrics)
+      update_activity(position, metrics)
       update_charts(metrics)
     end
 
@@ -257,17 +285,33 @@ module MinknowTui
       value.try { |number| "%.1f%%" % (number * 100) } || "—"
     end
 
+    private def present(value : String) : String
+      value.empty? ? "—" : MinknowTui.text(value)
+    end
+
+    private def remaining(run : Run?, metrics : Metrics) : String
+      return "—" if run.try(&.ended_at) || !(until_time = metrics.remaining_until)
+      seconds = Math.max(0, (until_time - Time.utc).total_seconds.to_i64)
+      value = "%02d:%02d:%02d" % {seconds // 3600, seconds // 60 % 60, seconds % 60}
+      metrics.remaining_estimated? ? "#{value} (estimate)" : value
+    end
+
     private def update_overview(position : Position, metrics : Metrics)
       run = @store.run
-      @overview.content = "\n  #{MinknowTui.text(position.name)}  #{position.status}#{position.simulated? ? " [SIMULATED]" : ""}\n" +
-                          "  Software: #{position.software}  #{position.error}\n  Sample: #{run.try(&.sample) || "—"}\n  Experiment: #{run.try(&.experiment) || "—"}\n" +
-                          "  Run: #{run.try(&.id) || "—"}\n  Protocol: #{run.try(&.protocol) || "—"}\n  State: #{run.try(&.state) || "No active run"} / #{run.try(&.phase) || "—"}\n" +
-                          "  Elapsed: #{run.try(&.elapsed) || "—"}\n  #{acquisition_label}\n\n" +
+      @overview.content = "  #{MinknowTui.text(position.name)}  #{position.status}#{position.simulated? ? " [SIMULATED]" : ""}\n" +
+                          "  Sample: #{present(run.try(&.sample) || "")}  Experiment: #{present(run.try(&.experiment) || "")}\n" +
+                          "  State: #{run.try(&.state) || "No active run"} / #{run.try(&.phase) || "—"}\n" +
+                          "  Elapsed: #{run.try(&.elapsed) || "—"}  Remaining: #{remaining(run, metrics)}\n" +
                           "  Pass yield: #{MinknowTui.number(metrics.pass_bases, "b")}    Fail: #{MinknowTui.number(metrics.fail_bases, "b")}\n" +
                           "  Estimated yield: #{MinknowTui.number(metrics.estimated_bases, "b")}\n  Acquired reads: #{MinknowTui.number(metrics.reads)}\n" +
                           "  N50 basecalled: #{MinknowTui.number(metrics.n50, "b")}    Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
                           "  #{temperature_text(position, metrics)}\n" +
-                          "  Flow cell: #{position.flow_cell}  #{position.product}\n  Output: #{run.try(&.output) || "—"}\n\n" + data_status(position, metrics)
+                          "  Flow cell: #{position.flow_cell}  #{position.product}\n  #{acquisition_label}\n\n" +
+                          "  Run: #{run.try(&.id) || "—"}\n  Protocol: #{run.try(&.protocol) || "—"}\n" +
+                          "  Kit: #{present(run.try(&.kit) || "")}  Barcoding kits: #{present(metrics.barcoding_kits)}\n" +
+                          "  Basecall model: #{present(metrics.basecall_model)}\n  Alignment reference: #{present(metrics.alignment_reference)}\n" +
+                          "  Alignment BED: #{present(metrics.alignment_bed)}\n  Software: #{position.software}  #{position.error}\n" +
+                          "  Output: #{run.try(&.output) || "—"}\n\n" + data_status(position, metrics)
     end
 
     private def data_status(position : Position, metrics : Metrics) : String
@@ -281,9 +325,18 @@ module MinknowTui
       @yield_text.content = "#{acquisition_label}\nPass: #{MinknowTui.number(metrics.pass_bases, "b")}  Fail: #{MinknowTui.number(metrics.fail_bases, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_bases, "b")}\n" +
                             "Acquired reads: #{MinknowTui.number(metrics.reads)}\nBasecalls pass / fail: #{MinknowTui.number(metrics.pass_calls)} / #{MinknowTui.number(metrics.fail_calls)}\n" +
                             "Basecaller processed / skipped: #{metrics.basecalling_enabled == false ? "Disabled" : percentage(metrics.processed)}\n#{capability(position, "yield")}"
-      @quality_text.content = "#{acquisition_label}\nN50 basecalled: #{MinknowTui.number(metrics.n50, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
-                              "Pore occupancy: #{percentage(metrics.occupancy)}\nRead length: #{metrics.histogram_unit}; #{histogram_reads} reads\n" +
-                              "Y: read counts | #{full_histogram? ? "Full range" : "Auto 99.5%; ≥ tail"} | h: range\n#{capability(position, "read_lengths")}"
+      @quality_text.content = case @quality_mode
+                              when 0
+                                "#{acquisition_label}\nN50 basecalled: #{MinknowTui.number(metrics.n50, "b")}  Estimated: #{MinknowTui.number(metrics.estimated_n50, "b")}\n" +
+                                  "Pore occupancy: #{percentage(metrics.occupancy)}\nRead length: #{metrics.histogram_unit}; #{histogram_reads} reads\n" +
+                                  "Y: read counts | #{full_histogram? ? "Full range" : "Trim 1% each end"} | h: range  v: next graph\n#{capability(position, "read_lengths")}"
+                              when 1
+                                "#{acquisition_label}\nQ score histogram | read counts | modal Q: #{MinknowTui.number(metrics.qscore_modal)}\n" +
+                                  "v: next graph\n#{capability(position, "qscore_histogram")}"
+                              else
+                                "#{acquisition_label}\nQ score over time | approximate median per 60 min\n" +
+                                  "v: next graph\n#{capability(position, "qscore_time")}"
+                              end
       @states.content = "Channel time fractions (not pore counts):\n" + metrics.channel_states.map { |k, v| "#{MinknowTui.text(k)}: #{"%.1f%%" % v}" }.join("  ") + "\n#{capability(position, "duty_time")}"
     end
 
@@ -292,7 +345,64 @@ module MinknowTui
                              "Device: #{position.device}  Flow cell: #{position.flow_cell} #{position.product} (#{position.channels} channels)\n" +
                              "Endpoint: #{@store.endpoint.sub(/:\d+$/, "")}:#{position.port || "unavailable"}\nSoftware: #{position.software}  #{position.error}\n" +
                              "#{temperature_text(position, metrics)}\n#{acquisition_label}\n" +
+                             "Graph: #{@device_mode == 0 ? "Temperature" : "Bias voltage"} (v to change)\n" +
                              position.capabilities.map { |k, v| "#{k}: #{v}" }.join("\n")
+    end
+
+    private def update_activity(position : Position, metrics : Metrics)
+      return unless @store.tab == 5
+      buckets = metrics.activity_buckets(@activity_detailed, @activity_percent)
+      if buckets.empty?
+        @activity_text.content = "#{acquisition_label}\nPore activity: no data yet\n#{capability(position, "duty_time")}"
+        @activity_chart.values = [] of Array(Float64)
+        @last_activity_signature = nil
+        return
+      end
+      signature = {metrics.duty_buckets, metrics.state_styles, metrics.sample_rate, @activity_detailed, @activity_percent, @window.awidth}.hash
+      if signature != @last_activity_signature
+        @last_activity_signature = signature
+        names = activity_names(buckets, metrics)
+        @activity_chart.segment_labels = names.map { |name| @activity_detailed ? metrics.state_styles[name]?.try(&.label) || name : name }
+        @activity_chart.colors = names.map { |name| activity_color(name, metrics) }
+        @activity_chart.maximum = @activity_percent ? 100.0 : nil
+        @activity_chart.values = buckets.map { |bucket| names.map { |name| bucket.states[name]? || 0.0 } }
+        @activity_chart.labels = nil
+      end
+      unit = @activity_percent ? "State time equivalent (%)" : metrics.sample_rate ? "Channel-seconds" : "State samples"
+      visible = buckets.last(Math.max(1, @activity_chart.awidth))
+      @activity_text.content = "#{acquisition_label}\nPore activity: #{@activity_detailed ? "Detailed" : "Grouped"} | #{unit}\n" +
+                               "Elapsed: #{visible.first.start // 60}–#{visible.last.finish // 60} min; #{buckets.last.finish >= 48 * 60 ? 5 : 1} min buckets | d: detail  u: unit\n" +
+                               "Pore occupancy: #{percentage(metrics.occupancy)}\n#{capability(position, "duty_time")}"
+    end
+
+    private def activity_names(buckets : Array(DutyBucket), metrics : Metrics) : Array(String)
+      buckets.flat_map(&.states.keys).uniq!.sort_by! do |name|
+        if @activity_detailed
+          {metrics.state_styles[name]?.try(&.order) || UInt32::MAX, name}
+        else
+          order = metrics.state_styles.values.select { |style| style.group == name }.min_of?(&.order) || UInt32::MAX
+          {order, name}
+        end
+      end
+    end
+
+    private def activity_color(name : String, metrics : Metrics) : String
+      style = if @activity_detailed
+                metrics.state_styles[name]?
+              else
+                metrics.state_styles.values.find { |item| item.group == name }
+              end
+      color = @activity_detailed ? style.try(&.terminal_colour) : style.try(&.group_terminal_colour)
+      color || PoreMap.appearance(name)[1]
+    end
+
+    private def update_graph_visibility
+      @histogram.visible = @quality_mode == 0
+      @states.visible = @quality_mode == 0
+      @qscore_histogram.visible = @quality_mode == 1
+      @qscore_chart.visible = @quality_mode == 2
+      @temperature_chart.visible = @device_mode == 0
+      @bias_chart.visible = @device_mode == 1
     end
 
     private def capability(p : Position, key : String) : String
@@ -302,14 +412,20 @@ module MinknowTui
     private def clear_charts
       @yield_chart.clear_series
       @temperature_chart.clear_series
+      @bias_chart.clear_series
+      @qscore_chart.clear_series
       @histogram.values = [] of Float64
+      @qscore_histogram.values = [] of Float64
+      @activity_chart.values = [] of Array(Float64)
+      @last_activity_signature = nil
       @states.content = ""
       @last_chart_signature = ""
     end
 
     private def update_charts(m : Metrics)
       # Avoid rebuilding graph chrome on every clock tick.
-      signature = {m.pass.points, m.fail.points, m.estimated.points, m.temperatures.points, m.histogram, full_histogram?, @window.awidth}.hash.to_s
+      signature = {m.pass.points, m.fail.points, m.estimated.points, m.temperatures.points, m.bias_voltages.points,
+                   m.qscore_medians.points, m.histogram, m.qscore_histogram, full_histogram?, @window.awidth}.hash.to_s
       return if signature == @last_chart_signature
       @last_chart_signature = signature
       @yield_chart.clear_series
@@ -320,10 +436,19 @@ module MinknowTui
       @temperature_chart.clear_series
       @temperature_chart.add_line(m.temperature_label, m.temperatures.points, Theme::WARNING) unless m.temperatures.points.empty?
       @temperature_chart.refresh
+      @bias_chart.clear_series
+      @bias_chart.add_line("Bias voltage", m.bias_voltages.points, Theme::TURQUOISE) unless m.bias_voltages.points.empty?
+      @bias_chart.refresh
+      @qscore_chart.clear_series
+      @qscore_chart.add_line("Median Q", m.qscore_medians.points, Theme::TURQUOISE) unless m.qscore_medians.points.empty?
+      @qscore_chart.refresh
       capacity = Math.max(1, (@window.awidth - (compact? ? 4 : 34)) // 5)
       bars = m.histogram_bars(capacity, full_histogram?)
       @histogram.values = bars.map(&.count)
       @histogram.labels = bars.map(&.label)
+      qbars = m.qscore_bars(capacity)
+      @qscore_histogram.values = qbars.map(&.count)
+      @qscore_histogram.labels = qbars.map(&.label)
     end
 
     private def update_events
@@ -387,22 +512,44 @@ module MinknowTui
       case event.char
       when 'q'
         @window.quit
-      when '1'..'5'
+      when '1'..'6'
         show_tab(event.char.to_i - '1'.to_i)
-      when 'h'
-        return unless @store.tab == 2
-        @full_histogram = !@full_histogram
       when 'p' then pick_position
       when 'r' then pick_run
       when 'a' then pick_acquisition
       when '?' then track HelpDialog.new(@window)
       when '/' then filter_dialog
       else
-        return unless control_key(event.key)
+        return unless graph_key(event.char) || control_key(event.key)
       end
       event.accept
       @store.changed
       refresh
+    end
+
+    private def graph_key(char : Char?) : Bool
+      case char
+      when 'h'
+        return false unless @store.tab == 2 && @quality_mode == 0
+        @full_histogram = !@full_histogram
+      when 'v'
+        case @store.tab
+        when 2 then @quality_mode = (@quality_mode + 1) % 3
+        when 3 then @device_mode = (@device_mode + 1) % 2
+        else        return false
+        end
+        update_graph_visibility
+        @last_chart_signature = ""
+      when 'd'
+        return false unless @store.tab == 5
+        @activity_detailed = !@activity_detailed
+      when 'u'
+        return false unless @store.tab == 5
+        @activity_percent = !@activity_percent
+      else
+        return false
+      end
+      true
     end
 
     private def show_tab(index : Int32)

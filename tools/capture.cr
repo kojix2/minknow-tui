@@ -22,15 +22,28 @@ FileUtils.mkdir_p(destination)
     width: size[0], height: size[1], default_quit_keys: false,
     terminfo: Unibilium.from_terminal("xterm-256color"), force_unicode: true)
   ui = MinknowTui::UI.new(store, window)
-  5.times do |tab|
+  6.times do |tab|
     window.press(('1'.ord + tab).chr)
     snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-#{tab + 1}"))
   end
   window.press('3')
+  2.times do |mode|
+    window.press('v')
+    snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-quality-#{mode + 1}"))
+  end
+  window.press('v')
   window.press('h')
   snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-histogram-full"))
   window.press('h')
   snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-histogram-auto"))
+  window.press('4')
+  window.press('v')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-bias"))
+  window.press('6')
+  window.press('d')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-activity-detailed"))
+  window.press('u')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-activity-absolute"))
   window.press('5')
   window.press(Tput::Key::End)
   snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-last-channel"))

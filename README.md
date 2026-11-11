@@ -31,7 +31,10 @@ bin/minknow-tui --host localhost --port 9501
 | --- | --- |
 | Tab / Shift-Tab | Change focus |
 | j / k, arrows | Select or scroll |
-| 1–4 | Overview, Yield, Quality, Device |
+| 1–6 | Overview, Yield, Quality, Device, Pores, Activity |
+| v | Switch Quality graphs or Device history graphs |
+| h | Show full read-length range or trim 1% at each end |
+| d / u | Activity: detailed/grouped states; percent/absolute time |
 | p / r / a | Select position / protocol run / acquisition |
 | / | Filter positions and runs |
 | Esc | Clear filter or close dialog |
@@ -66,6 +69,12 @@ connections require explicit authentication and a matching certificate.
 Statistics belong to the selected acquisition. Calibration and sequencing data
 are not combined. Estimated bases, basecalled bases and basecall counts are
 shown separately. Pore occupancy is not a live pore count.
+
+Activity shows channel state time by minute, grouped into five-minute buckets
+after 48 minutes. Channel names and colors come from acquisition metadata when
+available. Q-score graphs require basecalling. The Overview's remaining time
+comes from MinKNOW run-until estimates and may be unavailable for historical
+runs. Read-length trimming only changes the chart; it does not change N50.
 
 Unsupported watch APIs fall back to polling. Missing optional APIs are listed
 in Device; authentication and connection errors are distinguished. Last known

@@ -40,6 +40,12 @@ describe MinknowTui::Decode do
 end
 
 describe MinknowTui::Api do
+  it "formats an IPv6 manager endpoint unambiguously" do
+    store = MinknowTui::Store.new
+    MinknowTui::Api.new(store, MinknowTui::Options.new(["--host", "::1", "--port", "9501"]))
+    store.endpoint.should eq("[::1]:9501")
+  end
+
   it "checks stream trailer status rather than assuming successful enumeration" do
     expect_raises(GRPC::StatusError) { MinknowTui::Api.check_status(GRPC::Status.unimplemented) }
     MinknowTui::Api.failure(GRPC::StatusError.new(GRPC::Status.unimplemented)).should eq("Unsupported")

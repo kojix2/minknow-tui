@@ -18,7 +18,7 @@ shards:
 
   grpc:
     git: https://github.com/kojix2/grpc.git
-    version: 0.1.0+git.commit.8955cbfe3ab2eaa7c257e89e56947f57d243fe36
+    version: 0.1.0+git.commit.a4cb6a4a02a08187f1bc90af856c61e28836ca1e
 
   html5:
     git: https://github.com/naqvis/crystal-html5.git
@@ -30,7 +30,7 @@ shards:
 
   minknow:
     git: https://github.com/kojix2/minknow.git
-    version: 0.1.0+git.commit.72f8f7caf4fe475018cd83c12a0206d0c9c4629e
+    version: 0.1.0+git.commit.b59d1320f5323fbf98e8ed7377806dc652a17a02
 
   msgpack:
     git: https://github.com/crystal-community/msgpack-crystal.git
@@ -42,7 +42,7 @@ shards:
 
   proto:
     git: https://github.com/kojix2/proto.git
-    version: 0.1.0+git.commit.931f27162defaab7c8834319c26aade399827c04
+    version: 0.1.0+git.commit.2ef39a3eac3c1de534ace734cbf17b41793caedc
 
   superconf:
     git: https://github.com/crystallabs/superconf.cr.git

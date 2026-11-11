@@ -23,7 +23,7 @@ module MinknowTui
       super(**options, layout: Crysterm::Layout::Dock.new)
       @info = Crysterm::Widgets::ScrollableText.new(parent: self, height: 4, layout_hint: :top, parse_tags: false)
       @legend = Crysterm::Widgets::ScrollableText.new(parent: self, height: 4, layout_hint: :bottom,
-        keys: true, vi_keys: true, parse_tags: false, wrap_content: true)
+        keys: true, vi_keys: true, parse_tags: true, wrap_content: true)
       @grid = Grid.new(parent: self, layout_hint: :center, keys: true, parse_tags: true)
       grid.on(Crysterm::Event::Resize) { reveal_selection }
       grid.on(Crysterm::Event::Mouse) do |event|
@@ -63,14 +63,23 @@ module MinknowTui
                      "Acquisition: #{MinknowTui.text(p.current_acquisition || "none / waiting")}\n" +
                      "Channel #{selected_channel}/#{p.channels}: #{state.try(&.name) || "not received"} | well #{state.try(&.well) || "—"}\n" +
                      "#{status}; last data #{stamp} | arrows / hjkl move"
-      signature = {p.name, p.channels, p.pore_states, selected_channel, @columns}.hash
+      signature = {p.name, p.channels, p.pore_states, p.state_styles, selected_channel, @columns}.hash
       return if signature == @signature
       @signature = signature
       render_grid(p)
+      update_legend(p)
+    end
+
+    private def update_legend(p : Position)
       counts = Hash(String, Int32).new(0)
       p.pore_states.each_value { |value| counts[value.name] += 1 }
       legend.content = "Channel counts; . not received: #{p.channels.to_i - p.pore_states.size}. Grid is channel order.\n" +
-                       counts.to_a.sort_by { |(_, count)| -count }.map { |(name, count)| "#{self.class.appearance(name)[0]} #{name}: #{count}" }.join("  ")
+                       counts.to_a.sort_by { |(_, count)| -count }.map do |(name, count)|
+                         style = p.state_styles[name]?
+                         color = style.try(&.terminal_colour) || self.class.appearance(name)[1]
+                         label = MinknowTui.text(style.try(&.label) || name).gsub(/[{}]/, "")
+                         "{#{color}-fg}#{self.class.appearance(name)[0]}{/#{color}-fg} #{label}: #{count}"
+                       end.join("  ")
     end
 
     private def render_grid(p : Position)
@@ -82,7 +91,9 @@ module MinknowTui
           elsif index % 8 == 0
             text << ' '
           end
-          glyph, color = self.class.appearance(p.pore_states[index + 1]?.try(&.name))
+          name = p.pore_states[index + 1]?.try(&.name)
+          glyph, default_color = self.class.appearance(name)
+          color = name.try { |value| p.state_styles[value]?.try(&.terminal_colour) } || default_color
           text << "{underline}" if index + 1 == selected_channel
           text << "{#{color}-fg}" << glyph << "{/#{color}-fg}"
           text << "{/underline}" if index + 1 == selected_channel

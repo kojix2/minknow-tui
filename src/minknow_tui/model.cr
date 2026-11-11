@@ -27,6 +27,11 @@ module MinknowTui
     LIMIT = 1440
     getter points = [] of Tuple(Float64, Float64)
 
+    def replace(values : Array(Tuple(Float64, Float64)))
+      @points.clear
+      values.each { |time, value| put(time, value) }
+    end
+
     # Replace replayed/overlapping timestamps. Compact old samples, retaining
     # the first and last points and a bounded number of representatives.
     def put(time : Number, value : Number)
@@ -53,6 +58,22 @@ module MinknowTui
     end
   end
 
+  record StateStyle, label : String, description : String, colour : String, group : String, order : UInt32, group_colour : String = "" do
+    def terminal_colour : String?
+      self.class.normalize_colour(colour)
+    end
+
+    def group_terminal_colour : String?
+      self.class.normalize_colour(group_colour)
+    end
+
+    def self.normalize_colour(value : String) : String?
+      hex = value.lchop('#')
+      "##{hex}" if hex.matches?(/\A[0-9a-fA-F]{6}\z/)
+    end
+  end
+  record DutyBucket, start : Int32, finish : Int32, states : Hash(String, Float64)
+
   record ChannelState, name : String, well : UInt32 = 0_u32,
     acquisition_index : UInt64 = 0_u64, analysis_index : UInt64 = 0_u64
 
@@ -71,37 +92,92 @@ module MinknowTui
     property temperature : Float64? = nil
     property temperature_label = "Temperature"
     property histogram = [] of HistogramBin
+    property qscore_histogram = [] of HistogramBin
     property histogram_unit = "bases"
     property channel_states = {} of String => Float64
+    property sample_rate : UInt32? = nil
+    property state_styles = {} of String => StateStyle
+    getter duty_buckets = [] of DutyBucket
     getter pass = Series.new
     getter fail = Series.new
     getter estimated = Series.new
     getter temperatures = Series.new
+    getter bias_voltages = Series.new
+    getter qscore_medians = Series.new
+    property qscore_modal : Float64? = nil
+    property basecall_model = ""
+    property alignment_reference = ""
+    property alignment_bed = ""
+    property barcoding_kits = ""
+    property remaining_until : Time? = nil
+    property? remaining_estimated = false
     property updated_at : Time? = nil
 
-    # Keep outliers visible as an overflow bin without coarsening the main
-    # distribution to the longest read. Counts and the API's N50 are unchanged.
-    def histogram_bars(capacity : Int32, full_range = false) : Array(HistogramBin)
-      full_range ||= capacity < 2
-      last = histogram.rindex { |bin| bin.count > 0 }
-      return [] of HistogramBin unless last
-      source = histogram.first(last + 1)
-      source = source.skip(source.index { |bin| bin.count > 0 } || 0) unless full_range
-      total = source.sum(&.count)
-      cutoff = source.size - 1
-      unless full_range
-        cumulative = 0.0
-        cutoff = source.index { |bin| (cumulative += bin.count) >= total * 0.995 } || cutoff
+    def put_duty(bucket : DutyBucket)
+      return if bucket.finish <= bucket.start
+      if index = @duty_buckets.index { |old| old.start == bucket.start }
+        @duty_buckets[index] = bucket
+      else
+        @duty_buckets << bucket
+        @duty_buckets.sort_by!(&.start)
       end
-      tail = source.skip(cutoff + 1).sum(&.count)
-      slots = Math.max(1, capacity - (tail > 0 ? 1 : 0))
-      main = source.first(cutoff + 1)
-      width = Math.max(1, (main.size + slots - 1) // slots)
-      bars = main.each_slice(width).map do |group|
+      while @duty_buckets.size > Series::LIMIT
+        @duty_buckets.shift
+      end
+    end
+
+    def activity_buckets(detailed = false, percent = true) : Array(DutyBucket)
+      return [] of DutyBucket if duty_buckets.empty?
+      step = duty_buckets.last.finish >= 48 * 60 ? 300 : 60
+      grouped = {} of Int32 => Hash(String, Float64)
+      duty_buckets.each do |bucket|
+        start = bucket.start // step * step
+        values = grouped[start] ||= Hash(String, Float64).new(0.0)
+        bucket.states.each do |name, value|
+          key = detailed ? name : (state_styles[name]?.try(&.group) || name)
+          values[key] += value
+        end
+      end
+      grouped.keys.sort!.map do |start|
+        values = grouped[start]
+        if percent
+          total = values.values.sum
+          values = values.transform_values { |value| total > 0 ? value * 100 / total : 0.0 }
+        elsif (rate = sample_rate) && rate > 0
+          values = values.transform_values { |value| value / rate }
+        end
+        DutyBucket.new(start, start + step, values)
+      end
+    end
+
+    def histogram_bars(capacity : Int32, full_range = false) : Array(HistogramBin)
+      return [] of HistogramBin if histogram.empty?
+      total = histogram.sum(&.count)
+      return [] of HistogramBin if total <= 0
+      lower = full_range ? 0.0 : total * 0.01
+      upper = full_range ? total : total * 0.99
+      cumulative = 0.0
+      adjusted = histogram.map do |bin|
+        before = cumulative
+        cumulative += bin.count
+        retained = Math.max(0.0, Math.min(cumulative, upper) - Math.max(before, lower))
+        HistogramBin.new(bin.lower, bin.upper, retained)
+      end
+      first = adjusted.index { |bin| bin.count > 0 }
+      last = adjusted.rindex { |bin| bin.count > 0 }
+      return [] of HistogramBin unless first && last
+      source = adjusted[first..last]
+      width = Math.max(1, (source.size + capacity - 1) // Math.max(1, capacity))
+      source.each_slice(width).map do |group|
         HistogramBin.new(group.first.lower, group.last.upper, group.sum(&.count))
       end.to_a
-      bars << HistogramBin.new(main.last.upper, Float64::INFINITY, tail) if tail > 0
-      bars
+    end
+
+    def qscore_bars(capacity : Int32) : Array(HistogramBin)
+      width = Math.max(1, (qscore_histogram.size + capacity - 1) // Math.max(1, capacity))
+      qscore_histogram.each_slice(width).map do |group|
+        HistogramBin.new(group.first.lower, group.last.upper, group.sum(&.count))
+      end.to_a
     end
   end
 
@@ -110,6 +186,7 @@ module MinknowTui
     property sample = ""
     property experiment = ""
     property protocol = ""
+    property kit = ""
     property state = "Unknown"
     property phase = "Unknown"
     property output = ""
@@ -141,6 +218,7 @@ module MinknowTui
     property device_type = ""
     property flow_cell = ""
     property product = ""
+    property state_styles = {} of String => StateStyle
     property has_flow_cell : Bool? = nil
     property channels = 0_u32
     property? simulated = false
@@ -197,7 +275,7 @@ module MinknowTui
     property run_id : String? = nil
     property acquisition_id : String? = nil
     property? follow_current = true
-    property tab = 0
+    getter tab = 0
     property filter = ""
     property detail = Metrics.new
     property generation = 0_u64
@@ -213,6 +291,21 @@ module MinknowTui
 
     def run : Run?
       position.try { |position| position.runs[run_id]? }
+    end
+
+    def tab=(value : Int32)
+      return if @tab == value
+      @tab = value
+      clear_detail_capabilities
+      changed
+    end
+
+    private def clear_detail_capabilities
+      position.try do |selected|
+        selected.capabilities.keys.each do |key|
+          selected.capabilities.delete(key) if key.starts_with?("detail.") && selected.capabilities[key] != "Unsupported"
+        end
+      end
     end
 
     def select_position(id : String?)
@@ -262,6 +355,7 @@ module MinknowTui
     def reset_detail
       @detail = Metrics.new
       @generation &+= 1
+      clear_detail_capabilities
       changed
     end
 

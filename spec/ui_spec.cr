@@ -129,6 +129,7 @@ describe "minknow-tui headless UI" do
         interface.pores.visible?.should be_false
         window.dump.to_s.should_not contain("LIVE X2")
         window.dump.to_s.should contain("Read length")
+        interface.overview.content.should contain("Kit: SQK-LSK114")
       end
     end
 
@@ -184,6 +185,7 @@ describe "minknow-tui headless UI" do
       with_ui(size[0], size[1]) do |store, demo, interface, window|
         interface.compact?.should eq(size[0] < 100)
         window.dump.to_s.should contain("minknow-tui")
+        window.dump.to_s.should contain("Pass yield:")
         window.press('3')
         demo.update
         interface.refresh
@@ -195,7 +197,31 @@ describe "minknow-tui headless UI" do
         window.dump.to_s.should contain("Full range")
         window.press('h')
         window.repaint
-        window.dump.to_s.should contain("Auto 99.5%")
+        window.dump.to_s.should contain("Trim 1% each end")
+        window.press('v')
+        interface.quality_mode.should eq(1)
+        store.tab.should eq(2)
+        window.repaint
+        window.dump.to_s.should contain("Q score histogram")
+        window.press('v')
+        window.repaint
+        window.dump.to_s.should contain("Q score over time")
+        window.press('4')
+        window.press('v')
+        window.repaint
+        window.dump.to_s.should contain("Bias voltage")
+        window.press('6')
+        window.repaint
+        window.dump.to_s.should contain("Pore activity")
+        window.dump.to_s.should contain("Elapsed: 0–120 min")
+        interface.activity_chart.values.should_not be_empty
+        interface.activity_chart.values.last.sum.should be_close(100.0, 0.001)
+        window.press('d')
+        window.repaint
+        window.dump.to_s.should contain("Detailed")
+        window.press('u')
+        window.repaint
+        window.dump.to_s.should contain("State samples")
         window.press('a')
         window.repaint
         interface.dialog.should_not be_nil

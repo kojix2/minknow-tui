@@ -11,6 +11,8 @@ class FakeMinKnow < GRPC::Service
   property? active_run = true
   property? statistics_available = false
   property? channels_available = false
+  property? remaining_available = false
+  property? basecalling_enabled = true
 
   def initialize(@service_full_name : String, @port : Int32, @calls = [] of String)
   end
@@ -63,12 +65,28 @@ class FakeMinKnow < GRPC::Service
 
   def server_streaming?(method : String) : Bool
     {"flow_cell_positions", "watch_flow_cell_positions", "stream_instance_activity", "stream_notifications", "get_user_messages",
-     "stream_acquisition_output", "stream_duty_time", "stream_read_length_histogram", "stream_temperature", "get_channel_states"}.includes?(method)
+     "stream_acquisition_output", "stream_duty_time", "stream_read_length_histogram", "stream_temperature", "get_channel_states",
+     "stream_bias_voltages", "stream_q_score_histogram", "stream_basecall_boxplots", "stream_updates"}.includes?(method)
   end
 
   def dispatch_server_stream(method : String, request : Bytes, ctx : GRPC::ServerContext, writer : GRPC::RawResponseStream) : GRPC::Status
     @calls << "#{service_full_name}/#{method}"
     return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authenticated?
+    if method == "stream_updates" && remaining_available?
+      update = MA::RunUntil::Update.new
+      estimate = MA::RunUntil::EstimatedTimeRemainingUpdate::EstimatedTime.new
+      estimate.estimated = MA::RunUntil::EstimatedTimeRemainingUpdate::Estimated.new.tap do |value|
+        value.min_time = Google::Protobuf::Timestamp.new.tap(&.seconds=(Time.utc.to_unix + 3600))
+        value.max_time = value.min_time
+      end
+      remaining = MA::RunUntil::EstimatedTimeRemainingUpdate.new
+      remaining.stop_estimates = MA::RunUntil::EstimatedTimeRemainingUpdate::EstimatedTimes.new.tap do |values|
+        values.estimated_times["runtime"] = estimate
+      end
+      update.estimated_time_remaining_update = remaining
+      writer.send_raw(MA::RunUntil::StreamUpdatesResponse.new.tap(&.update=(update)).encode)
+      return GRPC::Status.ok
+    end
     if method == "get_channel_states" && channels_available?
       channel_request = MA::Data::GetChannelStatesRequest.decode(request)
       @calls << "channels:#{channel_request.first_channel}-#{channel_request.last_channel}"
@@ -138,6 +156,43 @@ class FakeMinKnow < GRPC::Service
         end
         writer.send_raw(response.encode)
       end
+    when "stream_bias_voltages"
+      [[-180.0, -175.0], [-170.0]].each do |voltages|
+        response = MA::Statistics::StreamBiasVoltagesResponse.new
+        response.bias_voltages = voltages.map_with_index do |voltage, index|
+          MA::Statistics::BiasVoltagePacket.new.tap do |packet|
+            packet.time_seconds = ((index + (voltage == -170.0 ? 2 : 0)) * 60).to_u64
+            packet.bias_voltage = voltage
+          end
+        end
+        writer.send_raw(response.encode)
+      end
+    when "stream_q_score_histogram"
+      response = MA::Statistics::StreamQScoreHistogramResponse.new
+      response.bucket_ranges = [MA::Statistics::StreamQScoreHistogramResponse::BucketRange.new.tap { |range| range.start = 10.0_f32; range.end_ = 20.0_f32 }]
+      simplex = MA::Statistics::StreamQScoreHistogramResponse::QScoreHistogramData.new
+      simplex.bucket_values = [7_u64]
+      simplex.filtering = [MA::Statistics::QScoreHistogramKey.new.tap do |key|
+        key.read_type = Proto::OpenEnum(MA::Statistics::QScoreHistogramKey::ReadType).new(1)
+        key.call_status = Proto::OpenEnum(MA::Statistics::QScoreHistogramKey::BasecallStatus).new(3)
+      end]
+      overall = MA::Statistics::StreamQScoreHistogramResponse::QScoreHistogramData.new.tap do |data|
+        data.bucket_values = [25_u64]
+        data.modal_q_score = 18.0_f32
+        data.filtering = [MA::Statistics::QScoreHistogramKey.new]
+      end
+      response.histogram_data = [simplex, overall]
+      writer.send_raw(response.encode)
+    when "stream_basecall_boxplots"
+      req = MA::Statistics::StreamBoxplotRequest.decode(request)
+      @calls << "boxplot-width:#{req.dataset_width}"
+      [[17.0_f32], [18.0_f32, 19.0_f32]].each do |values|
+        response = MA::Statistics::BoxplotResponse.new
+        response.datasets = values.map do |value|
+          MA::Statistics::BoxplotResponse::BoxplotDataset.new.tap { |dataset| dataset.count = 25_u64; dataset.q50 = value }
+        end
+        writer.send_raw(response.encode)
+      end
     else
       return GRPC::Status.unimplemented
     end
@@ -158,7 +213,18 @@ class FakeMinKnow < GRPC::Service
   private def acquisition(id)
     MA::Acquisition::AcquisitionRunInfo.new.tap do |info|
       info.run_id = id
-      info.config_summary = MA::Acquisition::AcquisitionConfigSummary.new.tap(&.basecalling_enabled=(true))
+      info.config_summary = MA::Acquisition::AcquisitionConfigSummary.new.tap do |config|
+        config.basecalling_enabled = basecalling_enabled?
+        config.basecalling_model_version = "test-model"
+        config.alignment_reference_files = ["reference.fa"]
+        state = MA::Acquisition::ChannelStateInfo::ChannelState.new
+        state.name = "strand"
+        state.style = MA::Acquisition::ChannelStateInfo::Style.new.tap { |style| style.label = "Sequencing"; style.colour = "#52d687" }
+        group = MA::Acquisition::ChannelStateInfo::Group.new
+        group.name = "Sequencing"
+        group.states = [state]
+        config.channel_state_info = MA::Acquisition::ChannelStateInfo.new.tap(&.groups=([group]))
+      end
       info.yield_summary = MA::Acquisition::AcquisitionYieldSummary.new.tap do |y|
         y.read_count = id.starts_with?("old") ? 50_i64 : 100_i64
         y.basecalled_pass_bases = id.starts_with?("old") ? 5000_i64 : 10000_i64
@@ -181,7 +247,7 @@ def with_fake_minknow(&)
   port = listener.local_address.port
   listener.close
   calls = [] of String
-  peers = %w[manager.Manager instance.Instance device.Device protocol.Protocol acquisition.Acquisition statistics.Statistics notifications.Notifications log.Log data.Data].map do |name|
+  peers = %w[manager.Manager instance.Instance device.Device protocol.Protocol acquisition.Acquisition statistics.Statistics run_until.RunUntil notifications.Notifications log.Log data.Data].map do |name|
     FakeMinKnow.new("minknow_api.#{name}Service", port, calls)
   end
   server = GRPC::Server.new

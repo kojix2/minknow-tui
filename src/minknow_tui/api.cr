@@ -6,6 +6,8 @@ require "minknow/src/generated/minknow_api/notifications.grpc"
 require "minknow/src/generated/minknow_api/log.pb"
 require "minknow/src/generated/minknow_api/log.grpc"
 require "minknow/src/generated/minknow_api/data.grpc"
+require "minknow/src/generated/minknow_api/run_until.pb"
+require "minknow/src/generated/minknow_api/run_until.grpc"
 require "./model"
 require "./options"
 
@@ -28,6 +30,7 @@ module MinknowTui
       r.sample = MinknowTui.text(value.user_info.try(&.sample_id).try(&.value) || "")
       r.experiment = MinknowTui.text(value.user_info.try(&.protocol_group_id).try(&.value) || "")
       r.protocol = MinknowTui.text(value.protocol_id)
+      r.kit = MinknowTui.text(value.user_info.try(&.kit_info).try(&.sequencing_kit) || "")
       r.state = name(value.state, "PROTOCOL_")
       phase = value.phase_history.max_by? { |snapshot| time(snapshot.timestamp).try(&.to_unix_ms) || 0_i64 }
       r.phase = name(phase.try(&.phase) || value.phase, "PHASE_")
@@ -41,6 +44,7 @@ module MinknowTui
     def flow_cell(p : Position, value : MinknowApi::Device::GetFlowCellInfoResponse)
       if p.flow_cell != value.flow_cell_id || p.has_flow_cell != value.has_flow_cell
         p.pore_states.clear
+        p.state_styles.clear
         p.pore_updated_at = nil
       end
       p.has_flow_cell = value.has_flow_cell
@@ -68,6 +72,20 @@ module MinknowTui
         m.n50 = m.processed = nil
       end
       m.updated_at = Time.utc
+    end
+
+    def styles(info : MinknowApi::Acquisition::ChannelStateInfo?) : Hash(String, StateStyle)
+      result = {} of String => StateStyle
+      info.try(&.groups).try &.each do |group|
+        group.states.each do |state|
+          style = state.style
+          group_name = group.name.empty? ? state.name : group.name
+          result[state.name] = StateStyle.new(MinknowTui.text(style.try(&.label) || state.name).gsub(/[{}]/, ""),
+            MinknowTui.text(style.try(&.description) || ""), style.try(&.colour) || "",
+            MinknowTui.text(group_name).gsub(/[{}]/, ""), state.global_order, group.style.try(&.colour) || "")
+        end
+      end
+      result
     end
 
     def n50(m : Metrics, called : Number, estimated : Number)
@@ -112,7 +130,7 @@ module MinknowTui
     def initialize(@store, @options : Options)
       tls = !{"0", "false", "no"}.includes?((ENV["MINKNOW_TLS"]? || "true").downcase)
       @config = Minknow::ConnectionConfig.new(host: @options.host, port: @options.port, tls: tls, auto_local_auth: false)
-      store.endpoint = "#{@options.host}:#{@options.port}"
+      store.endpoint = @config.authority
     end
 
     def start
@@ -185,7 +203,7 @@ module MinknowTui
         ch.close
         if !@options.explicit_port? && @config.port == 9501 && !@config.client_certificate_configured? && refused?(ex)
           @config = @config.with_port(9502)
-          @store.endpoint = "#{@config.host}:9502"
+          @store.endpoint = @config.authority
           @store.event("TUI", "INFO", "Manager port 9501 refused the connection; trying TLS port 9502")
         end
         raise ex
@@ -547,6 +565,7 @@ module MinknowTui
 
     private def start_channels(p : Position, scope : Scope, ch : GRPC::Channel)
       client = MA::Data::DataService::Client.new(ch)
+      load_channel_styles(p, scope, ch)
       watch(scope, p.capabilities, "channels") do
         while scope.active? && (p.channels == 0 || p.has_flow_cell == false)
           p.capabilities["channels"] = p.has_flow_cell == false ? "No flow cell" : "Waiting for channel count"
@@ -578,25 +597,57 @@ module MinknowTui
       end
     end
 
+    private def load_channel_styles(p : Position, scope : Scope, ch : GRPC::Channel)
+      if acquisition_id = p.current_acquisition
+        acquisition = MA::Acquisition::AcquisitionService::Client.new(ch)
+        spawn do
+          request = MA::Acquisition::GetAcquisitionRunInfoRequest.new
+          request.run_id = acquisition_id
+          attempt(scope, p.capabilities, "channel_styles") do
+            value = acquisition.get_acquisition_info(request, context)
+            p.state_styles = Decode.styles(value.config_summary.try(&.channel_state_info)) if scope.active? && p.current_acquisition == acquisition_id
+          end
+        end
+      end
+    end
+
     private def start_detail(p : Position, scope : Scope, ch : GRPC::Channel)
       id = @store.acquisition_id
       return unless id
-      generation = @store.generation
       metrics = @store.detail
       statistics = MA::Statistics::StatisticsService::Client.new(ch)
-      acquisition = MA::Acquisition::AcquisitionService::Client.new(ch)
       caps = scope.capabilities
       # UNIMPLEMENTED is endpoint capability, not a per-run failure. Cache it
       # across tab/acquisition changes, but reset on a new position connection.
       p.capabilities.each do |key, value|
         caps[key.sub("detail.", "")] = value if key.starts_with?("detail.") && value == "Unsupported"
       end
+      poll_summary(p, scope, ch, id, metrics, caps, @store.generation)
+      start_n50(scope, caps, statistics, id, metrics) if {0, 2}.includes?(@store.tab)
+      start_tab_streams(scope, caps, ch, statistics, id, metrics)
+      publish_detail_capabilities(p, scope, caps, @store.generation, @store.tab)
+    end
+
+    private def poll_summary(p, scope, ch, id, metrics, caps, generation)
+      acquisition = MA::Acquisition::AcquisitionService::Client.new(ch)
       poll(scope, caps, "summary", 5.seconds) do
         request = MA::Acquisition::GetAcquisitionRunInfoRequest.new
         request.run_id = id
         value = acquisition.get_acquisition_info(request, context)
         if scope.active? && @store.current?(generation)
-          metrics.basecalling_enabled = value.config_summary.try(&.basecalling_enabled)
+          if config = value.config_summary
+            metrics.basecalling_enabled = config.basecalling_enabled
+            metrics.sample_rate = config.sample_rate > 0 ? config.sample_rate : nil
+            metrics.state_styles = Decode.styles(config.channel_state_info)
+            model = config.basecalling_model_names.try(&.simplex_model) || ""
+            model = config.basecalling_config_filename if model.empty?
+            model = config.basecalling_model_version if model.empty?
+            metrics.basecall_model = MinknowTui.text(model)
+            metrics.alignment_reference = MinknowTui.text(config.alignment_reference_files.join(", "))
+            metrics.alignment_bed = MinknowTui.text(config.alignment_bed_file)
+            metrics.barcoding_kits = MinknowTui.text(config.barcoding_kits.join(", "))
+            p.state_styles = metrics.state_styles if id == p.current_acquisition
+          end
           value.yield_summary.try { |v| Decode.summary(metrics, v) }
           if id == p.current_acquisition
             metrics.n50 ||= p.live.n50
@@ -604,15 +655,24 @@ module MinknowTui
           end
         end
       end
-      start_n50(scope, caps, statistics, id, metrics) if {0, 2}.includes?(@store.tab)
+    end
+
+    private def start_tab_streams(scope, caps, ch, statistics, id, metrics)
       case @store.tab
+      when 0 then watch_remaining(scope, caps, ch, id, metrics)
       when 1 then watch_yield(scope, caps, statistics, id, metrics)
       when 2 then watch_quality(scope, caps, statistics, id, metrics)
-      when 3 then watch_temperature(scope, caps, statistics, id, metrics)
+      when 3
+        watch_temperature(scope, caps, statistics, id, metrics)
+        watch_bias(scope, caps, statistics, id, metrics)
+      when 5 then watch_duty(scope, caps, statistics, id, metrics)
       end
+    end
+
+    private def publish_detail_capabilities(p, scope, caps, generation, tab)
       # Keep capability diagnostics up to date while streams are active.
       spawn do
-        while scope.active?
+        while scope.active? && @store.current?(generation) && @store.tab == tab
           caps.each { |key, value| p.capabilities["detail.#{key}"] = value }
           @store.changed
           scope.pause(0.5.seconds)
@@ -657,18 +717,104 @@ module MinknowTui
 
     private def watch_quality(scope, caps, statistics, id, metrics)
       histogram(scope, caps, statistics, id, metrics)
+      spawn do
+        while scope.active? && metrics.basecalling_enabled.nil?
+          scope.pause(0.1.seconds)
+        end
+        if scope.active?
+          if metrics.basecalling_enabled
+            watch_qscore(scope, caps, statistics, id, metrics)
+            watch_qscore_time(scope, caps, statistics, id, metrics)
+          else
+            caps["qscore_histogram"] = "Disabled (basecalling off)"
+            caps["qscore_time"] = "Disabled (basecalling off)"
+          end
+        end
+      end
+      watch_duty(scope, caps, statistics, id, metrics)
+    end
+
+    private def watch_duty(scope, caps, statistics, id, metrics)
       watch(scope, caps, "duty_time", finite: true) do
         request = MA::Statistics::StreamDutyTimeRequest.new
         request.acquisition_run_id = id
         request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(60_u64))
         consume(scope, statistics.stream_duty_time(request, stream_context)) do |response|
-          if last = response.bucket_ranges.size.pred.to_i32
-            if last >= 0
-              values = response.channel_states.transform_values { |state| state.state_times[last]?.try(&.to_f64) || 0.0 }
+          response.bucket_ranges.each_with_index do |range, index|
+            values = response.channel_states.transform_values { |state| state.state_times[index]?.try(&.to_f64) || 0.0 }
+            metrics.put_duty(DutyBucket.new(range.start.to_i, range.end_.to_i, values))
+            if index == response.bucket_ranges.size - 1
               total = values.values.sum
               metrics.channel_states = values.transform_values { |v| total > 0 ? v * 100 / total : 0.0 }
-              metrics.occupancy = response.pore_occupancy[last]?.try(&.to_f64)
+              metrics.occupancy = response.pore_occupancy[index]?.try(&.to_f64)
             end
+          end
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_qscore(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "qscore_histogram", finite: true) do
+        request = MA::Statistics::StreamQScoreHistogramRequest.new
+        request.acquisition_run_id = id
+        request.poll_time_seconds = 60_u32
+        consume(scope, statistics.stream_q_score_histogram(request, stream_context)) do |response|
+          data = response.histogram_data.find do |item|
+            item.filtering.any? { |filter| filter.read_type.raw == 0 && filter.call_status.raw == 0 }
+          end || response.histogram_data.find do |item|
+            item.filtering.any? { |filter| filter.read_type.raw == 0 }
+          end || response.histogram_data.first?
+          if data
+            metrics.qscore_histogram = response.bucket_ranges.map_with_index do |range, index|
+              HistogramBin.new(range.start.to_f64, range.end_.to_f64, (data.bucket_values[index]? || 0_u64).to_f64)
+            end
+            metrics.qscore_modal = data.modal_q_score.to_f64
+          end
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_qscore_time(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "qscore_time", finite: true) do
+        request = MA::Statistics::StreamBoxplotRequest.new
+        request.acquisition_run_id = id
+        request.dataset_width = 60_u32
+        consume(scope, statistics.stream_basecall_boxplots(request, stream_context)) do |response|
+          points = response.datasets.each_with_index.compact_map do |dataset, index|
+            {index * 3600.0, dataset.q50.to_f64} if dataset.count > 0
+          end.to_a
+          metrics.qscore_medians.replace(points)
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_bias(scope, caps, statistics, id, metrics)
+      watch(scope, caps, "bias_voltage", finite: true) do
+        request = MA::Statistics::StreamBiasVoltagesRequest.new
+        request.acquisition_run_id = id
+        consume(scope, statistics.stream_bias_voltages(request, stream_context)) do |response|
+          response.bias_voltages.each { |packet| metrics.bias_voltages.put(packet.time_seconds, packet.bias_voltage) }
+          @store.changed
+        end
+      end
+    end
+
+    private def watch_remaining(scope, caps, ch, id, metrics)
+      client = MA::RunUntil::RunUntilService::Client.new(ch)
+      watch(scope, caps, "remaining", finite: true) do
+        request = MA::RunUntil::StreamUpdatesRequest.new
+        request.acquisition_run_id = id
+        consume(scope, client.stream_updates(request, stream_context)) do |response|
+          estimates = response.update.try(&.estimated_time_remaining_update).try(&.stop_estimates).try(&.estimated_times)
+          next unless estimates
+          times = estimates.values.compact_map { |estimate| Decode.time(estimate.estimated.try(&.min_time)) }
+          metrics.remaining_until = times.min?
+          metrics.remaining_estimated = estimates.keys != ["runtime"] || estimates.values.any? do |estimate|
+            value = estimate.estimated
+            value.nil? || value.min_time != value.max_time
           end
           @store.changed
         end

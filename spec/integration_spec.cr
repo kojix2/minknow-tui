@@ -38,7 +38,7 @@ describe "MinKNOW compatibility over local HTTP/2" do
   end
 
   it "uses histogram N50 as a fallback and decodes overlapping yield, quality and temperature streams" do
-    with_fake_minknow do |api, store, peers, _|
+    with_fake_minknow do |api, store, peers, calls|
       peers.each(&.statistics_available=(true))
       api.start
       wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
@@ -49,11 +49,49 @@ describe "MinKNOW compatibility over local HTTP/2" do
       wait_for { store.detail.pass.points == [{60.0, 120.0}] }
       store.tab = 2
       wait_for { store.detail.occupancy == 0.75 }
+      wait_for { store.detail.qscore_histogram.first?.try(&.count) == 25.0 }
+      wait_for { store.detail.qscore_medians.points == [{0.0, 18.0}, {3600.0, 19.0}] }
+      calls.should contain("boxplot-width:60")
+      store.detail.state_styles["strand"].label.should eq("Sequencing")
       store.detail.channel_states["strand"].should eq(75.0)
       store.detail.histogram.first.count.should eq(7.0)
       store.tab = 3
       wait_for { store.detail.temperatures.points.size == 3 }
       store.detail.temperatures.points.should eq([{0.0, 35.0}, {60.0, 36.0}, {120.0, 37.0}])
+      wait_for { store.detail.bias_voltages.points.size == 3 }
+      store.detail.bias_voltages.points.last.should eq({120.0, -170.0})
+      store.tab = 5
+      wait_for { store.detail.duty_buckets.size == 1 }
+      store.detail.activity_buckets.first.states["Sequencing"].should eq(75.0)
+    end
+  end
+
+  it "shows run-until estimates and keeps unsupported optional streams scoped to their tabs" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each(&.remaining_available=(true))
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      wait_for { store.detail.remaining_until != nil }
+      store.detail.remaining_estimated?.should be_false
+      calls.any?(&.ends_with?("/stream_updates")).should be_true
+      store.tab = 3
+      wait_for { store.position.try(&.capabilities["detail.bias_voltage"]?) == "Unsupported" }
+      store.tab = 5
+      wait_for { store.position.try(&.capabilities["detail.duty_time"]?) == "Unsupported" }
+    end
+  end
+
+  it "does not request Q-score streams when basecalling is disabled" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each(&.basecalling_enabled=(false))
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      store.tab = 2
+      wait_for { store.position.try(&.capabilities["detail.qscore_histogram"]?) == "Disabled (basecalling off)" }
+      calls.any?(&.ends_with?("/stream_q_score_histogram")).should be_false
+      calls.any?(&.ends_with?("/stream_basecall_boxplots")).should be_false
     end
   end
 

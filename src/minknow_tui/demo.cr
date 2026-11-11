@@ -35,6 +35,7 @@ module MinknowTui
           run.sample = j == 0 ? "sample-A" : "sample-#{j + 1}"
           run.experiment = "experiment-01"
           run.protocol = "sequencing/sequencing_MIN114"
+          run.kit = "SQK-LSK114"
           started_at = Time.utc - (j * 24 + 2).hours
           run.started_at = started_at
           run.ended_at = j > 0 || index != 0 ? started_at + 1.hour : nil
@@ -110,6 +111,23 @@ module MinknowTui
       m.temperature = 35.1
       m.temperature_label = "Heatsink"
       m.channel_states = {"strand" => 78.0, "pore" => 12.0, "unavailable" => 7.0, "other" => 3.0}
+      m.state_styles = {
+        "strand"      => StateStyle.new("Sequencing", "Read in progress", "#52d687", "Sequencing", 1_u32),
+        "pore"        => StateStyle.new("Pore available", "Ready", "#228854", "Pore available", 2_u32),
+        "unavailable" => StateStyle.new("Unavailable", "", "#27508a", "Unavailable", 3_u32),
+        "other"       => StateStyle.new("Other", "", "#8ba5bf", "Other", 4_u32),
+      }
+      m.basecalling_enabled = true
+      m.basecall_model = "dna_r10.4.1_e8.2_400bps_sup"
+      m.barcoding_kits = "SQK-NBD114"
+      m.alignment_reference = "reference.fa"
+      m.remaining_until = Time.utc + 4.hours unless @store.run.try(&.ended_at)
+      m.remaining_estimated = true
+      @store.position.try(&.state_styles=(m.state_styles))
+      m.qscore_modal = 18.0
+      m.qscore_histogram = (0...40).map do |i|
+        HistogramBin.new(i.to_f64, (i + 1).to_f64, (Math.exp(-((i - 18.0) ** 2) / 42.0) * 8000).round.to_f64)
+      end
       m.histogram_unit = "basecalled bp"
       m.histogram = (0...1000).map do |i|
         count = (Math.exp(-((i - 10.0) ** 2) / 50.0) * 120_000).round
@@ -121,10 +139,14 @@ module MinknowTui
         m.fail.put(i * 60, fail_bases * i / 119.0)
         m.estimated.put(i * 60, estimated_bases * i / 119.0)
         m.temperatures.put(i * 60, 35.0 + Math.sin(i / 6.0) * 0.2)
+        m.bias_voltages.put(i * 60, -180.0 + Math.sin(i / 15.0) * 5.0)
+        m.qscore_medians.put(i * 60, 17.5 + Math.sin(i / 12.0) * 0.8)
+        m.put_duty(DutyBucket.new(i * 60, (i + 1) * 60, {"strand" => 78.0 + Math.sin(i / 5.0) * 5.0,
+                                                         "pore" => 12.0, "unavailable" => 7.0, "other" => 3.0}))
       end
       m.updated_at = Time.utc
       if p = @store.position
-        %w[activity history temperature detail.summary detail.yield detail.n50 detail.read_lengths detail.duty_time detail.temperature_history].each { |key| p.capabilities[key] = "Available [DEMO]" }
+        %w[activity history temperature detail.summary detail.yield detail.n50 detail.read_lengths detail.duty_time detail.temperature_history detail.bias_voltage detail.qscore_histogram detail.qscore_time detail.remaining].each { |key| p.capabilities[key] = "Available [DEMO]" }
       end
     end
 
