@@ -56,10 +56,20 @@ and authentication errors do not trigger port changes.
 | `MINKNOW_HOST`, `MINKNOW_PORT` | Manager endpoint |
 | `MINKNOW_TLS` | Set to `false` for a plaintext test server |
 | `MINKNOW_TRUSTED_CA` | MinKNOW CA certificate file |
+| `MINKNOW_AUTO_DETECT_CA` | Set to `false` (also `0` or `no`) to skip local default-path CA discovery |
 | `MINKNOW_AUTH_TOKEN` | Explicit local-auth token |
 | `MINKNOW_API_CLIENT_CERTIFICATE_CHAIN`, `MINKNOW_API_CLIENT_KEY` | Client certificate and key; supply both |
 | `MINKNOW_API_USE_LOCAL_TOKEN` | Set to `false` to disable localhost token discovery |
 | `PROTOCOL_TOKEN` | Protocol-auth metadata |
+
+With TLS enabled, `MINKNOW_TRUSTED_CA` takes precedence for any host. If set,
+it must point to a certificate file; an invalid path is an error, not a fallback.
+Otherwise, for `localhost`, `127.0.0.1`, or `::1`, the TUI checks only MinKNOW's
+standard CA paths for the current OS. On Linux it checks
+`/data/rpc-certs/minknow/ca.crt` and then
+`/var/lib/minknow/data/rpc-certs/minknow/ca.crt`. Other hosts, or connections
+with discovery disabled, use the normal TLS trust store unless a CA is
+explicitly supplied. TLS certificate and hostname verification remain enabled.
 
 Local token discovery and unary calls time out after five seconds. Remote
 connections require explicit authentication and a matching certificate.

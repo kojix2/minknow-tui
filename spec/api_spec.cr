@@ -1,5 +1,71 @@
 require "spec"
+require "file/tempfile"
 require "../src/minknow_tui/api"
+
+private class TestCAConfig < MinknowTui::ConnectionConfig
+  property ca_paths = [] of String
+
+  private def default_ca_certificate_paths : Array(String)
+    ca_paths
+  end
+end
+
+private def with_ca_environment(trusted_ca : String? = nil, auto_detect : String? = nil, &)
+  previous_ca = ENV["MINKNOW_TRUSTED_CA"]?
+  previous_auto = ENV["MINKNOW_AUTO_DETECT_CA"]?
+  ENV["MINKNOW_TRUSTED_CA"] = trusted_ca
+  ENV["MINKNOW_AUTO_DETECT_CA"] = auto_detect
+  yield
+ensure
+  ENV["MINKNOW_TRUSTED_CA"] = previous_ca
+  ENV["MINKNOW_AUTO_DETECT_CA"] = previous_auto
+end
+
+describe MinknowTui::ConnectionConfig do
+  it "loads an existing default CA only for loopback hosts with discovery enabled" do
+    File.tempfile("minknow-invalid-ca") do |file|
+      with_ca_environment do
+        {"localhost", "127.0.0.1", "::1", "[::1]"}.each do |host|
+          local = TestCAConfig.new(host: host)
+          local.ca_paths = [file.path]
+          # An empty file fails to load if passed to OpenSSL.
+          expect_raises(OpenSSL::Error, /SSL_CTX_load_verify_locations/) { local.tls_context }
+        end
+
+        remote = TestCAConfig.new(host: "minion.example")
+        remote.ca_paths = [file.path]
+        remote.tls_context.try(&.verify_mode).should eq(OpenSSL::SSL::VerifyMode::PEER)
+      end
+
+      with_ca_environment(auto_detect: "false") do
+        local = TestCAConfig.new(host: "localhost")
+        local.ca_paths = [file.path]
+        local.tls_context.try(&.verify_mode).should eq(OpenSSL::SSL::VerifyMode::PEER)
+      end
+    end
+  end
+
+  it "honors an explicit CA for remote and derived connections with discovery disabled" do
+    File.tempfile("minknow-invalid-ca") do |file|
+      with_ca_environment(trusted_ca: file.path, auto_detect: "false") do
+        config = MinknowTui::ConnectionConfig.new(host: "minion.example")
+        expect_raises(OpenSSL::Error, /SSL_CTX_load_verify_locations/) { config.tls_context }
+        expect_raises(OpenSSL::Error, /SSL_CTX_load_verify_locations/) { config.with_port(9502).tls_context }
+      end
+    end
+  end
+
+  it "reports an invalid explicit CA path rather than falling back" do
+    File.tempfile("minknow-invalid-ca") do |file|
+      with_ca_environment(trusted_ca: "#{file.path}/ca.crt") do
+        config = TestCAConfig.new(host: "localhost")
+        config.ca_paths = [file.path]
+        error = expect_raises(MinknowTui::ConnectionConfig::InvalidCAPath) { config.tls_context }
+        MinknowTui::Api.failure(error).should contain("MINKNOW_TRUSTED_CA")
+      end
+    end
+  end
+end
 
 describe MinknowTui::Decode do
   it "supports old phases and distinguishes absent output paths from explicitly empty paths" do

@@ -10,6 +10,7 @@ require "minknow/src/generated/minknow_api/run_until.pb"
 require "minknow/src/generated/minknow_api/run_until.grpc"
 require "./model"
 require "./options"
+require "./connection_config"
 
 module MinknowTui
   # All protobuf normalization lives here, outside the view and domain models.
@@ -126,12 +127,12 @@ module MinknowTui
     @selected_tab = -1
     @channel_acquisition : String? = nil
     @local_auth_token : String? = nil
-    @config : Minknow::ConnectionConfig
+    @config : ConnectionConfig
     @manager_channel : GRPC::Channel? = nil
 
     def initialize(@store, @options : Options)
       tls = !{"0", "false", "no"}.includes?((ENV["MINKNOW_TLS"]? || "true").downcase)
-      @config = Minknow::ConnectionConfig.new(host: @options.host, port: @options.port, tls: tls, auto_local_auth: false)
+      @config = ConnectionConfig.new(host: @options.host, port: @options.port, tls: tls, auto_local_auth: false)
       store.endpoint = @config.authority
     end
 
@@ -167,7 +168,7 @@ module MinknowTui
       @manager_channel.try(&.close)
     end
 
-    private def channel(config : Minknow::ConnectionConfig) : GRPC::Channel
+    private def channel(config : ConnectionConfig) : GRPC::Channel
       GRPC::Channel.new(config.address, tls_context: config.tls_context,
         endpoint_config: GRPC::EndpointConfig.new(connect_timeout: 5.seconds))
     end
@@ -307,6 +308,7 @@ module MinknowTui
     end
 
     def self.failure(ex : Exception) : String
+      return "Invalid MINKNOW_TRUSTED_CA: not a certificate file path" if ex.is_a?(ConnectionConfig::InvalidCAPath)
       if ex.is_a?(GRPC::StatusError)
         case ex.code
         when GRPC::StatusCode::UNIMPLEMENTED                                        then return "Unsupported"
