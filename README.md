@@ -107,10 +107,10 @@ macOS statically links external libraries and allows only OS system libraries
 as dynamic dependencies. Linkage and CLI/demo startup are checked before packaging.
 
 Push a tag to publish a Release after both builds pass. Assets are native
-architecture `.tar.gz` archives and SHA-256 checksums. Archives include the
-binary, README, manifests and toolchain information. macOS support follows
-the runner's SDK; Homebrew runtime libraries are not required. Terminal database
-and MinKNOW authentication files remain host data.
+architecture `.tar.gz` archives. Archives include the binary, README, manifests
+and toolchain information. macOS support follows the runner's SDK; Homebrew
+runtime libraries are not required. Terminal database and MinKNOW authentication
+files remain host data.
 
 Dependabot checks GitHub Actions weekly. Application dependencies use `shard.lock`.
 

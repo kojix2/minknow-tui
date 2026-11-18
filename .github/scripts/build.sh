@@ -75,9 +75,3 @@ grep -q minknow-tui "$work/demo.dump"
 cp README.md shard.yml shard.lock "dist/$name/"
 { crystal --version; shards --version; pkg-config --modversion libnghttp2; } > "dist/$name/BUILD-INFO.txt"
 tar -czf "dist/$name.tar.gz" -C dist "$name"
-cd dist
-if [[ "$platform" == macos ]]; then
-  shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-else
-  sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-fi

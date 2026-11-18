@@ -46,9 +46,7 @@ jobs:
       - uses: actions/upload-artifact@main
         with:
           name: release-${{ runner.os }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -74,5 +72,5 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "$RELEASE_TAG" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 --clobber
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz --clobber
           gh release edit "$RELEASE_TAG" --draft=false
