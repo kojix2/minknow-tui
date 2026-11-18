@@ -14,6 +14,26 @@ private def with_token_file(contents : String, &)
 end
 
 describe "MinKNOW compatibility over local HTTP/2" do
+  it "reports live statistics as available before their streams finish" do
+    with_fake_minknow do |api, store, peers, _|
+      peers.each do |peer|
+        peer.statistics_available = true
+        peer.keep_statistics_open = true
+      end
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      {1 => ["yield"], 2 => ["qscore_histogram", "qscore_time", "duty_time"],
+       3 => ["temperature_history", "bias_voltage"], 5 => ["duty_time"]}.each do |tab, keys|
+        store.tab = tab
+        keys.each do |key|
+          wait_for { store.position.try(&.capabilities["detail.#{key}"]?) == "Available" }
+        end
+      end
+      store.detail.activity_buckets.should_not be_empty
+    end
+  end
+
   it "resumes channel monitoring when a position endpoint returns without changing the historical selection" do
     with_fake_minknow do |api, store, peers, calls|
       peers.each do |peer|

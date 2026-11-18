@@ -68,6 +68,22 @@ describe MinknowTui::ConnectionConfig do
 end
 
 describe MinknowTui::Decode do
+  it "falls back to the protocol kit tag and preserves an explicit user kit" do
+    raw = MinknowApi::Protocol::ProtocolRunInfo.new
+    raw.meta_info = MinknowApi::Protocol::ProtocolInfo.new.tap do |info|
+      info.tags["kit"] = MinknowApi::Protocol::ProtocolInfo::TagValue.new.tap(&.string_value=("SQK-LSK114"))
+    end
+    MinknowTui::Decode.run(raw).kit.should eq("SQK-LSK114")
+    raw.user_info = MinknowApi::Protocol::ProtocolRunUserInfo.new.tap do |user|
+      user.kit_info = MinknowApi::Protocol::KitInfo.new.tap(&.sequencing_kit=("SQK-RBK114-96"))
+    end
+    MinknowTui::Decode.run(raw).kit.should eq("SQK-RBK114-96")
+    raw.user_info.try(&.kit_info).try(&.sequencing_kit=(""))
+    MinknowTui::Decode.run(raw).kit.should eq("SQK-LSK114")
+    raw.meta_info = nil
+    MinknowTui::Decode.run(raw).kit.should be_empty
+  end
+
   it "supports old phases and distinguishes absent output paths from explicitly empty paths" do
     raw = MinknowApi::Protocol::ProtocolRunInfo.new
     raw.run_id = "run"

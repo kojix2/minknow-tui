@@ -13,6 +13,7 @@ class FakeMinKnow < GRPC::Service
   property flow_cell_delay = 0.seconds
   property? activity_available = false
   property? statistics_available = false
+  property? keep_statistics_open = false
   property? channels_available = false
   property? remaining_available = false
   property? basecalling_enabled = true
@@ -131,7 +132,7 @@ class FakeMinKnow < GRPC::Service
       return GRPC::Status.ok
     end
     if statistics_available? && service_full_name == "minknow_api.statistics.StatisticsService"
-      return statistics_stream(method, request, writer)
+      return statistics_stream(method, request, writer, ctx)
     end
     return GRPC::Status.unimplemented unless method == "flow_cell_positions"
     stream_positions(writer)
@@ -168,7 +169,7 @@ class FakeMinKnow < GRPC::Service
     end
   end
 
-  private def statistics_stream(method, request, writer)
+  private def statistics_stream(method, request, writer, ctx)
     case method
     when "stream_acquisition_output"
       # The second response revises the first cumulative snapshot.
@@ -243,6 +244,11 @@ class FakeMinKnow < GRPC::Service
       end
     else
       return GRPC::Status.unimplemented
+    end
+    if keep_statistics_open?
+      until ctx.cancelled?
+        sleep 0.05.seconds
+      end
     end
     GRPC::Status.ok
   end

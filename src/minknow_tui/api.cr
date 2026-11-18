@@ -32,6 +32,9 @@ module MinknowTui
       r.experiment = MinknowTui.text(value.user_info.try(&.protocol_group_id).try(&.value) || "")
       r.protocol = MinknowTui.text(value.protocol_id)
       r.kit = MinknowTui.text(value.user_info.try(&.kit_info).try(&.sequencing_kit) || "")
+      if r.kit.empty?
+        r.kit = MinknowTui.text(value.meta_info.try(&.tags["kit"]?).try(&.string_value) || "")
+      end
       r.state = name(value.state, "PROTOCOL_")
       phase = value.phase_history.max_by? { |snapshot| time(snapshot.timestamp).try(&.to_unix_ms) || 0_i64 }
       r.phase = name(phase.try(&.phase) || value.phase, "PHASE_")
@@ -329,10 +332,14 @@ module MinknowTui
       raise GRPC::StatusError.new(status) unless status.ok?
     end
 
-    private def consume(scope : Scope, stream : GRPC::ServerStream(T), & : T ->) forall T
+    private def consume(scope : Scope, stream : GRPC::ServerStream(T), caps : Hash(String, String)? = nil, key : String? = nil, & : T ->) forall T
       id = scope.register { stream.cancel }
       begin
-        stream.each { |value| yield value if scope.active? }
+        stream.each do |value|
+          next unless scope.active?
+          caps[key] = "Available" if caps && key
+          yield value
+        end
         self.class.check_status(stream.status) if scope.active?
       ensure
         scope.unregister(id)
@@ -735,7 +742,7 @@ module MinknowTui
         request = MA::Statistics::StreamAcquisitionOutputRequest.new
         request.acquisition_run_id = id
         request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(60_u64))
-        consume(scope, statistics.stream_acquisition_output(request, stream_context)) do |response|
+        consume(scope, statistics.stream_acquisition_output(request, stream_context), caps, "yield") do |response|
           response.snapshots.each do |group|
             group.snapshots.each do |snapshot|
               next unless y = snapshot.yield_summary
@@ -773,7 +780,7 @@ module MinknowTui
         request = MA::Statistics::StreamDutyTimeRequest.new
         request.acquisition_run_id = id
         request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(60_u64))
-        consume(scope, statistics.stream_duty_time(request, stream_context)) do |response|
+        consume(scope, statistics.stream_duty_time(request, stream_context), caps, "duty_time") do |response|
           response.bucket_ranges.each_with_index do |range, index|
             values = response.channel_states.transform_values { |state| state.state_times[index]?.try(&.to_f64) || 0.0 }
             metrics.put_duty(DutyBucket.new(range.start.to_i, range.end_.to_i, values))
@@ -793,7 +800,7 @@ module MinknowTui
         request = MA::Statistics::StreamQScoreHistogramRequest.new
         request.acquisition_run_id = id
         request.poll_time_seconds = 60_u32
-        consume(scope, statistics.stream_q_score_histogram(request, stream_context)) do |response|
+        consume(scope, statistics.stream_q_score_histogram(request, stream_context), caps, "qscore_histogram") do |response|
           data = response.histogram_data.find do |item|
             item.filtering.any? { |filter| filter.read_type.raw == 0 && filter.call_status.raw == 0 }
           end || response.histogram_data.find do |item|
@@ -815,7 +822,7 @@ module MinknowTui
         request = MA::Statistics::StreamBoxplotRequest.new
         request.acquisition_run_id = id
         request.dataset_width = 60_u32
-        consume(scope, statistics.stream_basecall_boxplots(request, stream_context)) do |response|
+        consume(scope, statistics.stream_basecall_boxplots(request, stream_context), caps, "qscore_time") do |response|
           points = response.datasets.each_with_index.compact_map do |dataset, index|
             {index * 3600.0, dataset.q50.to_f64} if dataset.count > 0
           end.to_a
@@ -829,7 +836,7 @@ module MinknowTui
       watch(scope, caps, "bias_voltage", finite: true) do
         request = MA::Statistics::StreamBiasVoltagesRequest.new
         request.acquisition_run_id = id
-        consume(scope, statistics.stream_bias_voltages(request, stream_context)) do |response|
+        consume(scope, statistics.stream_bias_voltages(request, stream_context), caps, "bias_voltage") do |response|
           response.bias_voltages.each { |packet| metrics.bias_voltages.put(packet.time_seconds, packet.bias_voltage) }
           @store.changed
         end
@@ -841,7 +848,7 @@ module MinknowTui
       watch(scope, caps, "remaining", finite: true) do
         request = MA::RunUntil::StreamUpdatesRequest.new
         request.acquisition_run_id = id
-        consume(scope, client.stream_updates(request, stream_context)) do |response|
+        consume(scope, client.stream_updates(request, stream_context), caps, "remaining") do |response|
           estimates = response.update.try(&.estimated_time_remaining_update).try(&.stop_estimates).try(&.estimated_times)
           next unless estimates
           times = estimates.values.compact_map { |estimate| Decode.time(estimate.estimated.try(&.min_time)) }
@@ -860,7 +867,7 @@ module MinknowTui
         request = MA::Statistics::StreamTemperatureRequest.new
         request.acquisition_run_id = id
         index = 0
-        consume(scope, statistics.stream_temperature(request, stream_context)) do |response|
+        consume(scope, statistics.stream_temperature(request, stream_context), caps, "temperature_history") do |response|
           # API temperature buckets are implicit one-minute intervals and
           # initial history is followed by incremental packets.
           response.temperatures.each do |packet|
@@ -912,7 +919,7 @@ module MinknowTui
           request.poll_time_seconds = 60_u32
           request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(1000_u64))
           begin
-            consume(scope, client.stream_read_length_histogram(request, stream_context)) do |response|
+            consume(scope, client.stream_read_length_histogram(request, stream_context), caps, "read_lengths") do |response|
               caps["read_lengths"] = "Available"
               apply_histogram(metrics, response)
               @store.changed

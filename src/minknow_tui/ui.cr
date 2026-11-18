@@ -86,7 +86,7 @@ module MinknowTui
     @yield_chart : CW::GraphLineChart
     @temperature_chart : CW::GraphLineChart
     @bias_chart : CW::GraphLineChart
-    @qscore_chart : CW::GraphLineChart
+    getter qscore_chart : CW::GraphLineChart
     @histogram : CW::GraphBar
     @qscore_histogram : CW::GraphBar
     @activity_text : CW::ScrollableText
@@ -247,10 +247,28 @@ module MinknowTui
       runs = @store.position.try(&.history) || [] of Run
       runs = runs.select { |run| "#{run.label} #{run.id} #{run.experiment}".downcase.includes?(@store.filter.downcase) }
       @run_keys = runs.map(&.id)
-      rows = [["Run / sample", "State"]] + runs.map { |run| ["#{run.id == @store.position.try(&.current_run) ? "* " : run.started_at.try(&.to_local.to_s("%m/%d "))}#{run.label}", run.state] }
+      # Reserve the state column before fitting names. API state strings (for
+      # example Finished With Error) otherwise push it outside the sidebar.
+      width = Math.max(8, @runs_view.awidth - @runs_view.ihorizontal - 1)
+      state_width = Math.min(Math.max(5, runs.max_of? { |run| display_width(run.state) } || 5), Math.max(5, width - 6))
+      name_width = Math.max(1, width - state_width - 2)
+      rows = [["State", fit_cell("Run / sample", name_width)]] + runs.map do |run|
+        label = "#{run.id == @store.position.try(&.current_run) ? "* " : run.started_at.try(&.to_local.to_s("%m/%d "))}#{run.label}"
+        [fit_cell(run.state, state_width), fit_cell(label, name_width)]
+      end
       @runs_view.rows = rows unless @runs_view.rows == rows
       @runs_view.current_index = (@run_keys.index(@store.run_id) || 0) + 1 unless runs.empty?
       @runs_view.label = "Runs: #{MinknowTui.text(@store.position_id || "Host")} — API history"
+    end
+
+    private def display_width(value : String) : Int32
+      Tput::Unicode.str_width(value, @window.full_unicode?)
+    end
+
+    private def fit_cell(value : String, width : Int32) : String
+      return value if display_width(value) <= width
+      bytes = Tput::Unicode.leading_byte_len(value, Math.max(0, width - 1), @window.full_unicode?)
+      value.byte_slice(0, bytes) + "…"
     end
 
     private def acquisition_label : String
@@ -335,6 +353,7 @@ module MinknowTui
                                   "v: next graph\n#{capability(position, "qscore_histogram")}"
                               else
                                 "#{acquisition_label}\nQ score over time | approximate median per 60 min\n" +
+                                  "Latest median Q: #{MinknowTui.number(metrics.qscore_medians.points.last?.try(&.[1]))}\n" +
                                   "v: next graph\n#{capability(position, "qscore_time")}"
                               end
       @states.content = "Channel time fractions (not pore counts):\n" + metrics.channel_states.map { |k, v| "#{MinknowTui.text(k)}: #{"%.1f%%" % v}" }.join("  ") + "\n#{capability(position, "duty_time")}"
@@ -440,7 +459,17 @@ module MinknowTui
       @bias_chart.add_line("Bias voltage", m.bias_voltages.points, Theme::TURQUOISE) unless m.bias_voltages.points.empty?
       @bias_chart.refresh
       @qscore_chart.clear_series
-      @qscore_chart.add_line("Median Q", m.qscore_medians.points, Theme::TURQUOISE) unless m.qscore_medians.points.empty?
+      # Keep flat/singleton data away from the bottom edge of the raster.
+      @qscore_chart.axis_y.minimum = m.qscore_medians.points.min_of?(&.[1]).try { |value| value - 0.5 }
+      @qscore_chart.axis_y.maximum = m.qscore_medians.points.max_of?(&.[1]).try { |value| value + 0.5 }
+      @qscore_chart.axis_x.maximum = m.qscore_medians.points.size == 1 ? m.qscore_medians.points.first[0] + 60 : nil
+      unless m.qscore_medians.points.empty?
+        if m.qscore_medians.points.size == 1
+          @qscore_chart.add_scatter("Median Q", m.qscore_medians.points, Theme::TURQUOISE)
+        else
+          @qscore_chart.add_line("Median Q", m.qscore_medians.points, Theme::TURQUOISE)
+        end
+      end
       @qscore_chart.refresh
       capacity = Math.max(1, (@window.awidth - (compact? ? 4 : 34)) // 5)
       bars = m.histogram_bars(capacity, full_histogram?)

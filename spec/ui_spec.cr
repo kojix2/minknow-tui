@@ -21,6 +21,56 @@ private def with_ui(width, height, iterm2 = false, &)
 end
 
 describe "minknow-tui headless UI" do
+  it "keeps run states visible beside long sample names in the sidebar" do
+    with_ui(120, 36) do |store, _, interface, window|
+      runs = store.positions["X1"].history
+      runs.each(&.sample=("長いサンプル名" * 10))
+      runs[0].state = "Running"
+      runs[1].state = "Finished With Error"
+      interface.refresh
+      window.repaint
+      view = interface.runs_view
+      text = window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s
+      text.should contain("Running")
+      text.should contain("Finished With Error")
+      text.should contain("…")
+      window.unpin_width
+      window.unpin_height
+      window.emit(Crysterm::Event::DeviceResize, Crysterm::Size.new(140, 44))
+      interface.refresh
+      window.repaint
+      window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s.should contain("Finished With Error")
+    end
+  end
+
+  it "draws a lone Q-score sample as a marker without inventing more samples" do
+    with_ui(120, 36) do |store, _, interface, window|
+      store.detail.qscore_medians.replace([{0.0, 10.31}])
+      window.press('3')
+      window.press('v')
+      window.press('v')
+      interface.refresh
+      window.repaint
+      chart = interface.qscore_chart
+      chart.series.first.kind.scatter?.should be_true
+      chart.series.first.points.should eq([{0.0, 10.31}])
+      plot = chart.plot
+      plotted = (plot.atop...plot.atop + plot.aheight).any? do |y|
+        (plot.aleft...plot.aleft + plot.awidth).any? do |x|
+          cell = window.cell_rows[y][x]
+          rgb = Crysterm::Attr.unpack_color(Crysterm::Attr.fg(cell.attr))
+          red, green, blue = (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255
+          cell.char != ' ' && green > blue && green > red + 20
+        end
+      end
+      plotted.should be_true
+      window.dump.to_s.should contain("Latest median Q: 10.31")
+      store.detail.qscore_medians.put(3600, 11.0)
+      interface.refresh
+      chart.series.first.kind.line?.should be_true
+    end
+  end
+
   it "shows the position API as available through activity and preserves authentication errors after disconnection" do
     with_ui(120, 36) do |store, _, interface, _|
       position = store.positions["X1"]
