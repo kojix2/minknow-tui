@@ -23,13 +23,14 @@ end
 describe "minknow-tui headless UI" do
   it "keeps run states visible beside long sample names in the sidebar" do
     with_ui(120, 36) do |store, _, interface, window|
+      view = interface.runs_view
+      window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s.should contain(store.run.try(&.label) || "sample")
       runs = store.positions["X1"].history
       runs.each(&.sample=("長いサンプル名" * 10))
       runs[0].state = "Running"
       runs[1].state = "Finished With Error"
       interface.refresh
       window.repaint
-      view = interface.runs_view
       text = window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s
       text.should contain("Running")
       text.should contain("Finished With Error")

@@ -169,7 +169,7 @@ module MinknowTui
       update_graph_visibility
       @body.add_widget @sidebar
       @body.add_widget @tabs
-      @body.sizes = [30, 89]
+      @body.sizes = [44, 89]
       @body.set_stretch_factor(1, 1)
       @events_view = CW::Log.new(max_lines: 2000, keys: true, vi_keys: true, parse_tags: false)
       @events_view.label = "Events — Host + selected position"
@@ -471,7 +471,7 @@ module MinknowTui
         end
       end
       @qscore_chart.refresh
-      capacity = Math.max(1, (@window.awidth - (compact? ? 4 : 34)) // 5)
+      capacity = Math.max(1, (@window.awidth - (compact? ? 4 : 48)) // 5)
       bars = m.histogram_bars(capacity, full_histogram?)
       @histogram.values = bars.map(&.count)
       @histogram.labels = bars.map(&.label)
