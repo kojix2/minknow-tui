@@ -112,6 +112,63 @@ describe "minknow-tui headless UI" do
   end
 
   [{120, 36}, {80, 24}].each do |size|
+    it "renders pore backgrounds with contrasting letters and isolated selection at #{size}" do
+      with_ui(size[0], size[1]) do |store, _, interface, window|
+        position = store.positions["X1"]
+        position.channels = 12_u32
+        position.pore_states.clear
+        position.state_styles.clear
+        samples = [
+          {"strand", 'S', "123456", 0x123456, 0xffffff},
+          {"pore", 'P', "#f5f5f5", 0xf5f5f5, 0x000000},
+          {"custom", '?', "808080", 0x808080, 0x000000},
+          {"unblocking", 'U', "bad{tag}", 0xa53f97, 0xffffff},
+          {"no_pore", '-', "", 0x90c6e7, 0x000000},
+          {"saturated", '!', "", 0x68767e, 0xffffff},
+          {"adapter", 'A', "", 0xede797, 0x000000},
+          {"unavailable", '!', "", 0x54b8b1, 0x000000},
+          {"multiple", 'M', "", 0xf57e20, 0x000000},
+        ]
+        samples.each_with_index do |(name, _, colour, _, _), index|
+          position.update_channel(index + 1, MinknowTui::ChannelState.new(name))
+          position.state_styles[name] = MinknowTui::StateStyle.new(name, "", colour, "", 0_u32)
+        end
+        window.press('5')
+        interface.refresh
+        window.repaint
+        grid = interface.pores.grid
+        samples.each_with_index do |(_, glyph, _, background, foreground), index|
+          cell = window.cell_rows[grid.atop][grid.aleft + 5 + index + index // 8]
+          cell.char.should eq(glyph)
+          Crysterm::Attr.unpack_color(Crysterm::Attr.bg(cell.attr)).should eq(background)
+          Crysterm::Attr.unpack_color(Crysterm::Attr.fg(cell.attr)).should eq(foreground)
+          (Crysterm::Attr.flags(cell.attr) & Crysterm::Attr::UNDERLINE != 0).should eq(index == 0)
+        end
+        # The group separator and missing channels must not inherit a state background.
+        row = window.cell_rows[grid.atop]
+        row[grid.aleft + 13].char.should eq(' ')
+        row[grid.aleft + 15].char.should eq('.')
+        Crysterm::Attr.bg(row[grid.aleft + 13].attr).should eq(Crysterm::Attr.bg(row[grid.aleft + 15].attr))
+        window.press(Tput::Key::Right)
+        window.repaint
+        (Crysterm::Attr.flags(row[grid.aleft + 5].attr) & Crysterm::Attr::UNDERLINE).should eq(0)
+        (Crysterm::Attr.flags(row[grid.aleft + 6].attr) & Crysterm::Attr::UNDERLINE).should_not eq(0)
+
+        # Metadata can arrive after channel states; both grid and legend must repaint.
+        position.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "", "ffffff", "", 0_u32)
+        interface.refresh
+        window.repaint
+        cell = window.cell_rows[grid.atop][grid.aleft + 5]
+        Crysterm::Attr.unpack_color(Crysterm::Attr.bg(cell.attr)).should eq(0xffffff)
+        Crysterm::Attr.unpack_color(Crysterm::Attr.fg(cell.attr)).should eq(0x000000)
+        legend = interface.pores.legend
+        cell = window.cell_rows[legend.atop + 1][legend.aleft]
+        cell.char.should eq('S')
+        Crysterm::Attr.unpack_color(Crysterm::Attr.bg(cell.attr)).should eq(0xffffff)
+        Crysterm::Attr.unpack_color(Crysterm::Attr.fg(cell.attr)).should eq(0x000000)
+      end
+    end
+
     it "navigates live channels and a 3000-channel device at #{size}" do
       with_ui(size[0], size[1]) do |store, demo, interface, window|
         window.press('5')

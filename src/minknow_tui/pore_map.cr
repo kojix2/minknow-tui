@@ -76,13 +76,29 @@ module MinknowTui
       legend.content = "Channel counts; . not received: #{p.channels.to_i - p.pore_states.size}. Grid is channel order.\n" +
                        counts.to_a.sort_by { |(_, count)| -count }.map do |(name, count)|
                          style = p.state_styles[name]?
-                         color = style.try(&.terminal_colour) || self.class.appearance(name)[1]
                          label = MinknowTui.text(style.try(&.label) || name).gsub(/[{}]/, "")
-                         "{#{color}-fg}#{self.class.appearance(name)[0]}{/#{color}-fg} #{label}: #{count}"
+                         "#{state_badge(p, name)} #{label}: #{count}"
                        end.join("  ")
     end
 
+    private def state_badge(p : Position, name : String?) : String
+      glyph, default_color = self.class.appearance(name)
+      return "{#{default_color}-fg}#{glyph}{/#{default_color}-fg}" unless name
+      background = p.state_styles[name]?.try(&.terminal_colour) || default_color
+      # Colors.readable_on uses approximate brightness; compare black/white
+      # contrast ratios using linearized sRGB luminance here.
+      rgb = Crysterm::Colors.convert_cached(background)
+      components = Crysterm::Colors.rgb_channels(rgb).map do |channel|
+        value = channel / 255.0
+        value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+      end
+      luminance = components[0] * 0.2126 + components[1] * 0.7152 + components[2] * 0.0722
+      foreground = (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? "#000000" : "#ffffff"
+      "{#{background}-bg}{#{foreground}-fg}#{glyph}{/#{foreground}-fg}{/#{background}-bg}"
+    end
+
     private def render_grid(p : Position)
+      badges = {} of String? => String
       grid.content = String.build do |text|
         p.channels.to_i.times do |index|
           if index % @columns == 0
@@ -92,10 +108,8 @@ module MinknowTui
             text << ' '
           end
           name = p.pore_states[index + 1]?.try(&.name)
-          glyph, default_color = self.class.appearance(name)
-          color = name.try { |value| p.state_styles[value]?.try(&.terminal_colour) } || default_color
           text << "{underline}" if index + 1 == selected_channel
-          text << "{#{color}-fg}" << glyph << "{/#{color}-fg}"
+          text << badges.fetch(name) { badges[name] = state_badge(p, name) }
           text << "{/underline}" if index + 1 == selected_channel
         end
       end
@@ -134,20 +148,29 @@ module MinknowTui
       end
     end
 
+    # Fallbacks from MinKNOW 25.09 sequencing_channel_states.toml.
+    # Acquisition metadata takes precedence over these defaults.
+    FALLBACK_APPEARANCES = {
+      nil                    => {'.', Theme::MUTED},
+      "strand"               => {'S', "#00ff00"},
+      "pore"                 => {'P', "#00cc00"},
+      "adapter"              => {'A', "#ede797"},
+      "no_pore"              => {'-', "#90c6e7"},
+      "unblocking"           => {'U', "#a53f97"},
+      "unavailable"          => {'!', "#54b8b1"},
+      "saturated"            => {'!', "#68767e"},
+      "multiple"             => {'M', "#f57e20"},
+      "unknown_negative"     => {'?', "#b5aea7"},
+      "unknown_positive"     => {'?', "#0084a9"},
+      "zero"                 => {'0', "#4da9c3"},
+      "disabled"             => {'x', "#ccd5d8"},
+      "locked"               => {'x', "#ccd5d8"},
+      "pending_mux_change"   => {'~', Theme::MUTED},
+      "pending_manual_reset" => {'~', Theme::MUTED},
+    }
+
     def self.appearance(name : String?) : Tuple(Char, String)
-      case name
-      when nil                                          then {'.', Theme::MUTED}
-      when "strand"                                     then {'S', Theme::GREEN}
-      when "pore"                                       then {'P', Theme::TURQUOISE}
-      when "adapter"                                    then {'A', Theme::GREEN}
-      when "no_pore"                                    then {'-', Theme::MUTED}
-      when "unblocking"                                 then {'U', Theme::WARNING}
-      when "unavailable", "saturated"                   then {'!', Theme::ERROR}
-      when "multiple"                                   then {'M', Theme::WARNING}
-      when "disabled", "locked"                         then {'x', Theme::MUTED}
-      when "pending_mux_change", "pending_manual_reset" then {'~', Theme::MUTED}
-      else                                                   {'?', Theme::MUTED}
-      end
+      FALLBACK_APPEARANCES[name]? || {'?', Theme::MUTED}
     end
   end
 end

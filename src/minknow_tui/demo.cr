@@ -112,10 +112,10 @@ module MinknowTui
       m.temperature_label = "Heatsink"
       m.channel_states = {"strand" => 78.0, "pore" => 12.0, "unavailable" => 7.0, "other" => 3.0}
       m.state_styles = {
-        "strand"      => StateStyle.new("Sequencing", "Read in progress", "#52d687", "Sequencing", 1_u32),
-        "pore"        => StateStyle.new("Pore available", "Ready", "#228854", "Pore available", 2_u32),
-        "unavailable" => StateStyle.new("Unavailable", "", "#27508a", "Unavailable", 3_u32),
-        "other"       => StateStyle.new("Other", "", "#8ba5bf", "Other", 4_u32),
+        "strand"      => StateStyle.new("Sequencing", "Read in progress", "#00ff00", "Sequencing", 1_u32),
+        "pore"        => StateStyle.new("Pore available", "Ready", "#00cc00", "Pore available", 2_u32),
+        "unavailable" => StateStyle.new("Unavailable", "", "#54b8b1", "Unavailable", 3_u32),
+        "other"       => StateStyle.new("Other", "", "#ccd5d8", "Other", 4_u32),
       }
       m.basecalling_enabled = true
       m.basecall_model = "dna_r10.4.1_e8.2_400bps_sup"

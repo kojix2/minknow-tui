@@ -75,7 +75,11 @@ acquisitions stay selected.
 
 Activity shows channel state time by minute, grouped into five-minute buckets
 after 48 minutes. Channel names and colors come from acquisition metadata when
-available. Q-score graphs require basecalling. The Overview's remaining time
+available. Pores uses state colors as cell backgrounds with contrasting black
+or white letters, also shown in its legend. If metadata is missing, colors fall
+back to MinKNOW 25.09 sequencing defaults. Dots mark channels with no received
+state. Terminals without true color use the nearest supported colors.
+Q-score graphs require basecalling. The Overview's remaining time
 comes from MinKNOW run-until estimates and may be unavailable for historical
 runs. Read-length trimming only changes the chart; it does not change N50.
 
