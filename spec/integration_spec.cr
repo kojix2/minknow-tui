@@ -14,6 +14,36 @@ private def with_token_file(contents : String, &)
 end
 
 describe "MinKNOW compatibility over local HTTP/2" do
+  it "resumes channel monitoring when a position endpoint returns without changing the historical selection" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each do |peer|
+        peer.active_run = false
+        peer.channels_available = true
+        # Let history load before reconciliation to keep the selection stable.
+        peer.device_info_delay = 0.1.seconds
+      end
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      store.select_run("current")
+      store.tab = 4
+      position = store.positions["X1"]
+      wait_for { position.capabilities["channels"]? == "Available" }
+
+      peers.each(&.rpc_available=(false))
+      wait_for { position.port.nil? }
+      sleep 0.3.seconds
+      generation = store.generation
+      previous = calls.count(&.ends_with?("/get_channel_states"))
+      peers.each(&.rpc_available=(true))
+      wait_for { position.connected? && !position.port.nil? && position.capabilities["device"]? == "Available" }
+      wait_for { calls.count(&.ends_with?("/get_channel_states")) > previous && position.capabilities["channels"]? == "Available" }
+      store.generation.should eq(generation)
+      store.run_id.should eq("current")
+      store.acquisition_id.should eq("current-seq")
+    end
+  end
+
   it "preserves newer watch additions when a delayed position snapshot completes" do
     with_fake_minknow do |api, store, peers, _|
       peers.each do |peer|

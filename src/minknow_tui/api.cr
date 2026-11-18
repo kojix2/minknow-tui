@@ -396,6 +396,10 @@ module MinknowTui
       port = nil if port == 0
       if old = @positions[raw.name]?
         if old[0].port != port
+          if @store.position_id == raw.name
+            @details.stop
+            @logs.stop
+          end
           old[1].stop
           old[2].close
           @positions.delete(raw.name)
@@ -417,8 +421,11 @@ module MinknowTui
       ch = channel(@config.with_port(port))
       @positions[raw.name] = {p, scope, ch}
       start_position(p, scope, ch)
-      # A restarted position may have changed ports while it was selected.
-      @selected_position = nil if @store.position_id == raw.name
+      # A new channel needs new subscriptions even if the selection is unchanged.
+      if @store.position_id == raw.name
+        @selected_position = nil
+        @selection_generation = UInt64::MAX
+      end
     end
 
     private def remove_position(id : String)

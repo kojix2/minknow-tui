@@ -18,6 +18,8 @@ class FakeMinKnow < GRPC::Service
   property? basecalling_enabled = true
   property? watch_positions_available = false
   property position_names = ["X1"]
+  property? rpc_available = true
+  property device_info_delay = 0.seconds
   property watch_position_names : Array(String)? = nil
   property positions_delay = 0.seconds
   property current_acquisition_id = "current-seq"
@@ -65,6 +67,7 @@ class FakeMinKnow < GRPC::Service
                  return {Bytes.empty, GRPC::Status.unimplemented} unless flow_cell_available?
                  MA::Device::GetFlowCellInfoResponse.new.tap { |reply| reply.has_flow_cell = true; reply.flow_cell_id = "TEST001"; reply.channel_count = 512_u32 }
                when {"minknow_api.device.DeviceService", "get_device_info"}
+                 sleep device_info_delay if device_info_delay > 0.seconds
                  MA::Device::GetDeviceInfoResponse.new.tap(&.device_id=("FIXTURE"))
                when {"minknow_api.device.DeviceService", "get_temperature"}
                  MA::Device::GetTemperatureResponse.new
@@ -158,7 +161,7 @@ class FakeMinKnow < GRPC::Service
       MA::Manager::FlowCellPosition.new.tap do |position|
         position.name = name
         position.state = Proto::OpenEnum(MA::Manager::FlowCellPosition::State).new(1)
-        position.rpc_ports = MA::Manager::FlowCellPosition::RpcPorts.new.tap(&.secure=(@port.to_u32))
+        position.rpc_ports = MA::Manager::FlowCellPosition::RpcPorts.new.tap(&.secure=(@port.to_u32)) if rpc_available?
       end
     end
   end

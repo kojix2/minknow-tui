@@ -30,7 +30,7 @@ shards:
 
   minknow:
     git: https://github.com/kojix2/minknow.git
-    version: 0.1.0+git.commit.b59d1320f5323fbf98e8ed7377806dc652a17a02
+    version: 0.1.0+git.commit.55019794ac6199a39c902521eecc76b56a302f3f
 
   msgpack:
     git: https://github.com/crystal-community/msgpack-crystal.git
