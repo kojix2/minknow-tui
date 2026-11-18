@@ -21,7 +21,7 @@ module MinknowTui
 
     def initialize(**options)
       super(**options, layout: Crysterm::Layout::Dock.new)
-      @info = Crysterm::Widgets::ScrollableText.new(parent: self, height: 4, layout_hint: :top, parse_tags: false)
+      @info = Crysterm::Widgets::ScrollableText.new(parent: self, height: 2, layout_hint: :top, parse_tags: false)
       @legend = Crysterm::Widgets::ScrollableText.new(parent: self, height: 4, layout_hint: :bottom,
         keys: true, vi_keys: true, parse_tags: true, wrap_content: true)
       @grid = Grid.new(parent: self, layout_hint: :center, keys: true, parse_tags: true)
@@ -59,10 +59,8 @@ module MinknowTui
       state = p.pore_states[selected_channel]?
       status = p.capabilities["channels"]? || "Waiting for channel stream"
       stamp = p.pore_updated_at.try(&.to_local.to_s("%H:%M:%S")) || "not received"
-      info.content = "LIVE #{MinknowTui.text(p.name)} | #{p.status} | current device (not history)\n" +
-                     "Acquisition: #{MinknowTui.text(p.current_acquisition || "none / waiting")}\n" +
-                     "Channel #{selected_channel}/#{p.channels}: #{state.try(&.name) || "not received"} | well #{state.try(&.well) || "—"}\n" +
-                     "#{status}; last data #{stamp} | arrows / hjkl move"
+      info.content = "Channel #{selected_channel}/#{p.channels}: #{state.try(&.name) || "not received"} | well #{state.try(&.well) || "—"}\n" +
+                     "#{status}  ·  Last data: #{stamp}"
       signature = {p.name, p.channels, p.pore_states, p.state_styles, selected_channel, @columns}.hash
       return if signature == @signature
       @signature = signature

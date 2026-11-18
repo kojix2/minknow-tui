@@ -73,14 +73,17 @@ describe "minknow-tui headless UI" do
   end
 
   it "shows the position API as available through activity and preserves authentication errors after disconnection" do
-    with_ui(120, 36) do |store, _, interface, _|
+    with_ui(120, 36) do |store, _, interface, window|
       position = store.positions["X1"]
       position.capabilities["flow_cell"] = "Unsupported"
       position.capabilities["activity"] = "Available"
       position.connected = true
       interface.refresh
-      interface.overview.content.should contain("Position API: Available")
-      interface.overview.content.should_not contain("Position API: Unsupported")
+      window.press('i')
+      details = interface.dialog.as(MinknowTui::TextDialog).body.content
+      details.should contain("Position API: Available")
+      details.should contain("flow_cell: Unsupported")
+      window.press(Tput::Key::Escape)
 
       position.connected = false
       position.capabilities["flow_cell"] = "Authentication required"
@@ -163,6 +166,75 @@ describe "minknow-tui headless UI" do
   end
 
   [{120, 36}, {80, 24}].each do |size|
+    it "distinguishes same-sample history, live pores and following at #{size}" do
+      with_ui(size[0], size[1]) do |store, demo, interface, window|
+        position = store.positions["X1"]
+        live, old, older = position.history
+        live.sample = old.sample = "tui-playback"
+        live.started_at = Time.local(2026, 11, 18, 21, 34)
+        start = Time.local(2026, 11, 18, 21, 8)
+        old.started_at = start
+        old.ended_at = start + 10.minutes
+        old.state = "Finished With Error"
+        older.started_at = start - 1.hour
+        interface.refresh
+        window.repaint
+        unless interface.compact?
+          sidebar = interface.runs_view
+          text = window.dump(sidebar.aleft, sidebar.aleft + sidebar.awidth, sidebar.atop, sidebar.atop + sidebar.aheight).to_s
+          text.should contain("2026-11-18")
+          text.should contain("21:08 tui-play")
+        end
+        window.press('r')
+        window.press(Tput::Key::Down)
+        window.press(Tput::Key::Enter)
+        store.run_id.should eq(old.id)
+        store.detail.reads = 622_i64
+        interface.refresh
+        window.repaint
+        window.dump.to_s.should contain("HISTORY X1  ·  11/18 21:08")
+        interface.overview.content.should contain("622")
+        interface.overview.content.should contain("Run elapsed: 00:10:00")
+        old.ended_at = nil
+        interface.refresh
+        interface.overview.content.should contain("Run elapsed: —")
+        interface.overview.content.should_not contain(old.id)
+        window.press('i')
+        details = interface.dialog.as(MinknowTui::TextDialog).body
+        details.content.should contain(old.id)
+        details.content.should contain(old.acquisitions.last)
+        window.press(Tput::Key::End)
+        window.repaint
+        details.child_base.should be > 0
+        window.press(Tput::Key::Escape)
+        ['2', '3', '4', '6'].each do |key|
+          window.press(key)
+          window.repaint
+          window.dump.to_s.should contain("HISTORY X1  ·  11/18 21:08")
+        end
+        window.press('5')
+        demo.update
+        interface.refresh
+        window.repaint
+        window.dump.to_s.should contain("LIVE X1  ·  Current channels")
+        window.press('i')
+        details = interface.dialog.as(MinknowTui::TextDialog).body
+        details.content.should contain(live.acquisitions.last)
+        details.content.should_not contain(old.id)
+        window.press(Tput::Key::Escape)
+        window.press('1')
+        store.run_id.should eq(old.id)
+        window.press('5')
+        window.press('r')
+        window.press(Tput::Key::Enter)
+        interface.tabs.current_index.should eq(0)
+        store.run_id.should eq(live.id)
+        store.acquisition_id.should eq(position.current_acquisition)
+        window.repaint
+        window.dump.to_s.should contain("LIVE X1  ·  11/18 21:34")
+      end
+    end
+
     it "renders pore backgrounds with contrasting letters and isolated selection at #{size}" do
       with_ui(size[0], size[1]) do |store, _, interface, window|
         position = store.positions["X1"]
@@ -238,7 +310,9 @@ describe "minknow-tui headless UI" do
         demo.update
         interface.refresh
         window.repaint
-        interface.pores.info.content.should contain("demo-X1-protocol-0-sequencing")
+        window.press('i')
+        interface.dialog.as(MinknowTui::TextDialog).body.content.should contain("demo-X1-protocol-0-sequencing")
+        window.press(Tput::Key::Escape)
         store.select_position("X2")
         demo.update
         interface.refresh
@@ -255,7 +329,9 @@ describe "minknow-tui headless UI" do
         interface.pores.visible?.should be_false
         window.dump.to_s.should_not contain("LIVE X2")
         window.dump.to_s.should contain("Read length")
-        interface.overview.content.should contain("Kit: SQK-LSK114")
+        window.press('i')
+        interface.dialog.as(MinknowTui::TextDialog).body.content.should contain("Kit: SQK-LSK114")
+        window.press(Tput::Key::Escape)
       end
     end
 
@@ -310,7 +386,7 @@ describe "minknow-tui headless UI" do
     it "renders and navigates positions, runs, acquisitions and statistics at #{size}" do
       with_ui(size[0], size[1]) do |store, demo, interface, window|
         interface.compact?.should eq(size[0] < 100)
-        window.dump.to_s.should contain("minknow-tui")
+        window.dump.to_s.should contain("LIVE X1")
         window.dump.to_s.should contain("Pass yield:")
         window.press('3')
         demo.update
@@ -351,11 +427,13 @@ describe "minknow-tui headless UI" do
         window.press('a')
         window.repaint
         interface.dialog.should_not be_nil
+        window.press(Tput::Key::Up)
         window.press(Tput::Key::Enter)
         interface.dialog.should be_nil
         store.acquisition_id.should eq("demo-X1-protocol-0-calibration")
         window.press('p')
         window.repaint
+        window.press(Tput::Key::Home)
         window.press(Tput::Key::Enter)
         store.position_id.should be_nil
         interface.refresh
@@ -366,6 +444,28 @@ describe "minknow-tui headless UI" do
         window.press(Tput::Key::Escape)
         interface.dialog.should be_nil
       end
+    end
+  end
+
+  it "returns to read length when basecalling is off and shows only applicable graph keys" do
+    with_ui(80, 24) do |store, _, interface, window|
+      window.dump.to_s.should_not contain("v graph")
+      window.press('3')
+      window.press('v')
+      interface.quality_mode.should eq(1)
+      store.detail.basecalling_enabled = false
+      interface.refresh
+      window.press('v')
+      window.repaint
+      interface.quality_mode.should eq(0)
+      text = window.dump.to_s
+      text.should contain("Basecalling off")
+      text.should contain("h range")
+      text.should_not contain("v graph")
+      text.should_not contain("1/3")
+      window.press('4')
+      window.repaint
+      window.dump.to_s.should contain("v graph")
     end
   end
 

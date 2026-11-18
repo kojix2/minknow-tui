@@ -125,6 +125,11 @@ describe MinknowTui::Store do
     store.sync_selection
     store.acquisition_id.should eq("calibration")
 
+    position.current_run = "next-protocol"
+    store.sync_selection
+    store.run_id.should eq("protocol")
+    store.acquisition_id.should eq("calibration")
+    position.current_run = "protocol"
     store.select_acquisition("sequencing-2")
     run.acquisitions << "sequencing-3"
     position.current_acquisition = "sequencing-3"
@@ -146,6 +151,31 @@ describe MinknowTui::Store do
     store.tab = 2
     position.capabilities.has_key?("detail.qscore").should be_false
     position.capabilities["detail.bias"].should eq("Unsupported")
+  end
+
+  it "resumes following from an older acquisition even while the position is idle" do
+    store = MinknowTui::Store.new
+    position = MinknowTui::Position.new("X1")
+    store.positions[position.name] = position
+    old = MinknowTui::Run.new("old")
+    old.acquisitions = ["cal", "seq"]
+    position.runs[old.id] = old
+    store.select_position(position.name)
+    store.select_run(old.id)
+    store.select_acquisition("cal")
+    store.follow_current_run
+    store.acquisition_id.should eq("seq")
+    generation = store.generation
+    store.follow_current_run
+    store.generation.should eq(generation)
+    live = MinknowTui::Run.new("new")
+    live.acquisitions = ["next"]
+    position.runs[live.id] = live
+    position.current_run = live.id
+    position.current_acquisition = "next"
+    store.sync_selection
+    store.run_id.should eq("new")
+    store.acquisition_id.should eq("next")
   end
 
   it "defaults to current acquisition, preserves historical selection and invalidates old producers" do

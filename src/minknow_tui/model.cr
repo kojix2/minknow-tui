@@ -201,9 +201,14 @@ module MinknowTui
       sample.empty? ? id : sample
     end
 
-    def elapsed : String
+    def start_label(show_date = true) : String
+      started_at.try(&.to_local.to_s(show_date ? "%m/%d %H:%M" : "%H:%M")) || "Time unknown"
+    end
+
+    def elapsed(live_at : Time? = Time.utc) : String
       return "—" unless start = started_at
-      seconds = Math.max(0, ((ended_at || Time.utc) - start).total_seconds.to_i64)
+      return "—" unless finish = ended_at || live_at
+      seconds = Math.max(0, (finish - start).total_seconds.to_i64)
       "%02d:%02d:%02d" % {seconds // 3600, seconds // 60 % 60, seconds % 60}
     end
   end
@@ -329,8 +334,15 @@ module MinknowTui
       reset_detail
     end
 
+    def follow_current_run
+      @follow_current = true
+      @follow_acquisition = true
+      sync_selection
+    end
+
     def select_acquisition(id : String?)
       @follow_acquisition = id == position.try(&.current_acquisition)
+      @follow_current = @follow_acquisition && run_id == position.try(&.current_run)
       return if @acquisition_id == id
       @acquisition_id = id
       reset_detail
@@ -354,9 +366,7 @@ module MinknowTui
     private def sync_acquisition(p : Position)
       if r = run
         current = p.current_acquisition
-        if @follow_acquisition && current && r.acquisitions.includes?(current)
-          @acquisition_id = current
-        elsif !r.acquisitions.includes?(acquisition_id)
+        if @follow_acquisition || !r.acquisitions.includes?(acquisition_id)
           @acquisition_id = current && r.acquisitions.includes?(current) ? current : r.acquisitions.last?
           @follow_acquisition = true
         end

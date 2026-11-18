@@ -36,6 +36,7 @@ bin/minknow-tui --host localhost --port 9501
 | h | Show full read-length range or trim 1% at each end |
 | d / u | Activity: detailed/grouped states; percent/absolute time |
 | p / r / a | Select position / protocol run / acquisition |
+| i | Inspect full IDs, run settings, channel time fractions and API status |
 | / | Filter positions and runs |
 | Esc | Clear filter or close dialog |
 | End | Resume following events after scrolling up |
@@ -44,6 +45,12 @@ bin/minknow-tui --host localhost --port 9501
 
 Below 100 columns or 30 rows, use selection dialogs instead of the sidebar.
 The minimum supported size is 80×24. Pane dividers can be resized.
+
+The header identifies the position, run start time and sample for the statistics
+on screen. `HISTORY` includes earlier acquisitions within a running protocol.
+Pores always shows the current device. Returning to a statistics tab restores
+the selected history. Press `r`, then Enter to follow the current run and its
+acquisitions again. If the position is idle, this follows the next run when it starts.
 
 ## Connection
 
@@ -93,8 +100,8 @@ Q-score graphs require basecalling. The Overview's remaining time
 comes from MinKNOW run-until estimates and may be unavailable for historical
 runs. Read-length trimming only changes the chart; it does not change N50.
 
-Unsupported watch APIs fall back to polling. Missing optional APIs are listed
-in Device; authentication and connection errors are distinguished. Last known
+Unsupported watch APIs fall back to polling. Open details with `i` to inspect
+individual API statuses, including authentication and connection errors. Last known
 data remains visible during connection loss. Quiet streams are normal.
 
 History is limited to what MinKNOW retains through its API, and can disappear
