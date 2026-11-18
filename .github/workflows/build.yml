@@ -43,6 +43,9 @@ jobs:
             bash .github/scripts/build.sh
           fi
 
+      - name: Test playback shutdown handling
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s spec -p '*_test.py' -v
+
       - uses: actions/upload-artifact@main
         with:
           name: release-${{ runner.os }}

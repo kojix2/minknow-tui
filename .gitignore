@@ -3,3 +3,4 @@
 /.crystal/
 *.dwarf
 /dist/
+/.playback/
