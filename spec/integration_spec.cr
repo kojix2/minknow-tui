@@ -37,6 +37,32 @@ describe "MinKNOW compatibility over local HTTP/2" do
     end
   end
 
+  it "does not report disconnection when activity works but flow-cell info is unsupported" do
+    with_fake_minknow do |api, store, peers, _|
+      peers.each do |peer|
+        case peer.service_full_name
+        when "minknow_api.instance.InstanceService"
+          peer.activity_available = true
+        when "minknow_api.device.DeviceService"
+          peer.flow_cell_available = false
+          peer.flow_cell_delay = 0.25.seconds
+        end
+      end
+      api.start
+      wait_for do
+        if position = store.positions["X1"]?
+          position.capabilities["reconcile"]? == "Available" &&
+            position.capabilities["flow_cell"]? == "Unsupported" &&
+            position.capabilities["activity"]? == "Available"
+        else
+          false
+        end
+      end
+      store.positions["X1"].connected?.should be_true
+      store.positions["X1"].status.should_not eq("Disconnected (last known)")
+    end
+  end
+
   it "uses histogram N50 as a fallback and decodes overlapping yield, quality and temperature streams" do
     with_fake_minknow do |api, store, peers, calls|
       peers.each(&.statistics_available=(true))

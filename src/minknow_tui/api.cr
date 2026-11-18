@@ -506,11 +506,15 @@ module MinknowTui
             Decode.device(p, value) if scope.active?
           end
           next unless scope.active?
-          p.connected = p.capabilities["flow_cell"]? == "Available"
+          p.connected = position_connected?(p)
           p.updated_at = Time.utc if p.connected?
           @store.sync_selection if @store.position_id == p.name
         end
       end
+    end
+
+    private def position_connected?(p : Position) : Bool
+      p.capabilities["flow_cell"]? == "Available" || p.capabilities["activity"]? == "Available"
     end
 
     private def start_history(p, scope, protocol)

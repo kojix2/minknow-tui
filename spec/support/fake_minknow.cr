@@ -9,6 +9,9 @@ class FakeMinKnow < GRPC::Service
   property? slow_old_summary = false
   property? empty = false
   property? active_run = true
+  property? flow_cell_available = true
+  property flow_cell_delay = 0.seconds
+  property? activity_available = false
   property? statistics_available = false
   property? channels_available = false
   property? remaining_available = false
@@ -47,6 +50,8 @@ class FakeMinKnow < GRPC::Service
                  sleep 0.5.seconds if slow_old_summary? && id.starts_with?("old")
                  acquisition(id)
                when {"minknow_api.device.DeviceService", "get_flow_cell_info"}
+                 sleep flow_cell_delay if flow_cell_delay > 0.seconds
+                 return {Bytes.empty, GRPC::Status.unimplemented} unless flow_cell_available?
                  MA::Device::GetFlowCellInfoResponse.new.tap { |reply| reply.has_flow_cell = true; reply.flow_cell_id = "TEST001"; reply.channel_count = 512_u32 }
                when {"minknow_api.device.DeviceService", "get_device_info"}
                  MA::Device::GetDeviceInfoResponse.new.tap(&.device_id=("FIXTURE"))
@@ -72,6 +77,10 @@ class FakeMinKnow < GRPC::Service
   def dispatch_server_stream(method : String, request : Bytes, ctx : GRPC::ServerContext, writer : GRPC::RawResponseStream) : GRPC::Status
     @calls << "#{service_full_name}/#{method}"
     return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authenticated?
+    if method == "stream_instance_activity" && activity_available?
+      writer.send_raw(MA::Instance::StreamInstanceActivityResponse.new.encode)
+      return GRPC::Status.ok
+    end
     if method == "stream_updates" && remaining_available?
       update = MA::RunUntil::Update.new
       estimate = MA::RunUntil::EstimatedTimeRemainingUpdate::EstimatedTime.new

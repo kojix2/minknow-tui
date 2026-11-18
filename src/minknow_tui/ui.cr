@@ -316,7 +316,7 @@ module MinknowTui
 
     private def data_status(position : Position, metrics : Metrics) : String
       stamp = metrics.updated_at.try(&.to_local.to_s("%H:%M:%S %Z")) || "not received"
-      api = position.capabilities["flow_cell"]? || position.capabilities["activity"]? || "Connecting"
+      api = position.connected? ? "Available" : (position.capabilities["flow_cell"]? || position.capabilities["activity"]? || "Connecting")
       "  Summary received: #{stamp}\n  Position API: #{api}\n  API history may be cleared when MinKNOW restarts."
     end
 

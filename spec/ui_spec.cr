@@ -21,6 +21,24 @@ private def with_ui(width, height, iterm2 = false, &)
 end
 
 describe "minknow-tui headless UI" do
+  it "shows the position API as available through activity and preserves authentication errors after disconnection" do
+    with_ui(120, 36) do |store, _, interface, _|
+      position = store.positions["X1"]
+      position.capabilities["flow_cell"] = "Unsupported"
+      position.capabilities["activity"] = "Available"
+      position.connected = true
+      interface.refresh
+      interface.overview.content.should contain("Position API: Available")
+      interface.overview.content.should_not contain("Position API: Unsupported")
+
+      position.connected = false
+      position.capabilities["flow_cell"] = "Authentication required"
+      position.capabilities["activity"] = "Authentication required"
+      interface.refresh
+      interface.overview.content.should contain("Position API: Authentication required")
+    end
+  end
+
   it "cancels pickers without changing selection, including empty pickers" do
     with_ui(120, 36) do |store, _, interface, window|
       selected = {store.position_id, store.run_id, store.acquisition_id, store.generation}
