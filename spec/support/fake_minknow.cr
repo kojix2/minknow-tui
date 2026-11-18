@@ -26,6 +26,7 @@ class FakeMinKnow < GRPC::Service
   property channel_label = "Sequencing"
   property auth_token : String? = nil
   property local_token_path = ""
+  property local_token_delay = 0.seconds
 
   def initialize(@service_full_name : String, @port : Int32, @calls = [] of String)
   end
@@ -44,6 +45,7 @@ class FakeMinKnow < GRPC::Service
                    reply.minknow = MA::Instance::GetVersionInfoResponse::MinknowVersion.new.tap(&.full=("6.0.0-fixture"))
                  end
                when {"minknow_api.manager.ManagerService", "local_authentication_token_path"}
+                 sleep local_token_delay if local_token_delay > 0.seconds
                  MA::Manager::LocalAuthenticationTokenPathResponse.new.tap(&.path=(local_token_path))
                when {"minknow_api.manager.ManagerService", "describe_host"}
                  MA::Manager::DescribeHostResponse.new.tap(&.description=("Fake MinKNOW"))

@@ -107,8 +107,11 @@ describe "MinKNOW compatibility over local HTTP/2" do
         end
         api.start
         wait_for { store.capabilities["manager_health"]? == "Available" && store.positions["X1"]?.try(&.capabilities["current_protocol"]?) == "Authentication required" }
+        # Force the next reconciliation to run before the refreshed token arrives.
+        peers.each(&.local_token_delay=(1.second))
         File.write(path, {"token" => "ready"}.to_json)
-        wait_for(25.seconds) { store.positions["X1"].capabilities["current_protocol"]? == "Available" }
+        # Token refresh and reconciliation each poll every 15 seconds; allow either order.
+        wait_for(40.seconds) { store.positions["X1"].capabilities["current_protocol"]? == "Available" }
       end
     end
   end
