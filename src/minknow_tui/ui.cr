@@ -2,6 +2,7 @@ require "crysterm"
 require "./model"
 require "./theme"
 require "./pore_map"
+require "./signal_dialog"
 
 module MinknowTui
   alias CT = Crysterm
@@ -59,6 +60,7 @@ module MinknowTui
                             "h (Quality)       Trim 1% each end / full read-length range\n" +
                             "d / u (Activity) Detailed/grouped states; percent/absolute\n" +
                             "Arrows / hjkl     Select channel in Pores (Home/End, PgUp/PgDn)\n" +
+                            "t (Pores)         View current from the selected live channel\n" +
                             "p                 Select position (also in compact mode)\n" +
                             "r                 Follow the current run or select history\n" +
                             "a                 Select acquisition within the protocol\n" +
@@ -236,6 +238,10 @@ module MinknowTui
       update_lists
       update_detail
       @pores.refresh(@store.position) if @store.tab == 4
+      if dialog = @dialog.as?(SignalDialog)
+        @store.reconcile_trace
+        dialog.refresh
+      end
       update_events
       view = {@store.generation, @store.tab}
       if @last_view && @last_view != view
@@ -281,6 +287,7 @@ module MinknowTui
 
     private def footer : String
       case @dialog
+      when SignalDialog    then return " Esc back to Pores"
       when Picker          then return " ↑↓ choose  Enter select  Esc cancel"
       when TextDialog      then return " ↑↓ scroll  Esc close"
       when CW::InputDialog then return " Enter apply  Esc cancel"
@@ -301,7 +308,9 @@ module MinknowTui
     end
 
     private def graph_hints : Array(String)
-      return ["←↑↓→ channel"] if @store.tab == 4 && @store.position
+      if @store.tab == 4 && (p = @store.position)
+        return p.trace_available? ? ["←↑↓→ channel", "t trace"] : ["←↑↓→ channel"]
+      end
       return [] of String unless @store.acquisition_id
       case @store.tab
       when 2
@@ -728,11 +737,22 @@ module MinknowTui
       when '?' then track HelpDialog.new(@window)
       when '/' then filter_dialog
       else
-        return unless graph_key(event.char) || control_key(event.key)
+        return unless view_key(event.char) || control_key(event.key)
       end
       event.accept
       @store.changed
       refresh
+    end
+
+    private def view_key(char : Char?) : Bool
+      if char == 't'
+        return false unless trace = @store.open_trace(@pores.selected_channel)
+        dialog = SignalDialog.new(@window, trace, @store.connection.includes?("[DEMO]"))
+        dialog.on(CT::Event::Finished) { @store.close_trace }
+        track dialog
+        return true
+      end
+      graph_key(char)
     end
 
     private def graph_key(char : Char?) : Bool

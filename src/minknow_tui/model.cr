@@ -1,4 +1,5 @@
 require "set"
+require "deque"
 
 module MinknowTui
   VERSION = {{ `shards version "#{__DIR__}/../.."`.chomp.stringify }}
@@ -230,6 +231,7 @@ module MinknowTui
     property? connected = false
     property current_run : String? = nil
     property current_acquisition : String? = nil
+    property? acquiring_signal = false
     property live = Metrics.new
     property updated_at : Time? = nil
     getter runs = {} of String => Run
@@ -248,6 +250,10 @@ module MinknowTui
     def initialize(@name)
     end
 
+    def trace_available? : Bool
+      connected? && acquiring_signal? && has_flow_cell != false && channels > 0 && !current_acquisition.nil?
+    end
+
     def status : String
       return software unless software == "Running"
       return "Disconnected (last known)" if updated_at && !connected?
@@ -263,6 +269,38 @@ module MinknowTui
   end
 
   record Event, key : String, time : Time, source : String, level : String, message : String
+
+  # One contiguous tail of calibrated current from a single acquisition.
+  class SignalTrace
+    LIMIT = 1000
+    getter position : Position, acquisition : String, channel : Int32
+    getter scope = Scope.new
+    getter samples = Deque(Float32).new
+    getter next_sample : UInt64? = nil
+
+    def initialize(@position, @acquisition, @channel)
+    end
+
+    def append(first : UInt64, values : Array(Float32))
+      finish = first + values.size
+      return if values.empty? || (@next_sample.try { |index| finish <= index })
+      samples.clear if @next_sample.try { |index| first > index }
+      offset = Math.max(0, values.size - LIMIT)
+      if (index = @next_sample) && index > first
+        offset = Math.max(offset, (index - first).to_i)
+      end
+      (offset...values.size).each do |i|
+        value = values[i]
+        if value.finite?
+          samples.shift if samples.size == LIMIT
+          samples << value
+        else
+          samples.clear
+        end
+      end
+      @next_sample = finish
+    end
+  end
 
   class Store
     property endpoint = ""
@@ -286,6 +324,26 @@ module MinknowTui
     property detail = Metrics.new
     property generation = 0_u64
     property revision = 0_u64
+    getter trace : SignalTrace?
+
+    def open_trace(channel : Int32) : SignalTrace?
+      return unless tab == 4 && (p = position) && p.trace_available? && channel > 0 && channel <= p.channels
+      return unless id = p.current_acquisition
+      close_trace
+      @trace = SignalTrace.new(p, id, channel)
+    end
+
+    def close_trace
+      previous = @trace
+      @trace = nil
+      previous.try(&.scope.stop)
+    end
+
+    def reconcile_trace
+      return unless trace = @trace
+      p = position
+      close_trace unless p && p == trace.position && p.trace_available? && p.current_acquisition == trace.acquisition && trace.channel <= p.channels
+    end
 
     def changed
       @revision &+= 1
@@ -301,6 +359,7 @@ module MinknowTui
 
     def tab=(value : Int32)
       return if @tab == value
+      close_trace
       @tab = value
       clear_detail_capabilities
       changed
@@ -316,6 +375,7 @@ module MinknowTui
 
     def select_position(id : String?)
       return if id == position_id
+      close_trace
       @position_id = id
       @follow_current = true
       @follow_acquisition = true

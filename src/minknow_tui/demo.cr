@@ -47,6 +47,8 @@ module MinknowTui
           if j == 0 && index == 0
             p.current_run = run.id
             p.current_acquisition = run.acquisitions.last
+            p.acquiring_signal = true
+            p.live.sample_rate = 5000_u32
           end
         end
         @store.positions[name] = p
@@ -68,12 +70,23 @@ module MinknowTui
     end
 
     def stop
+      @store.close_trace
       @scope.stop
     end
 
     def update
       @tick += 1
       update_channels if @store.tab == 4
+      @store.reconcile_trace
+      if trace = @store.trace
+        offset = @tick.to_u64 * 5000
+        samples = Array.new(SignalTrace::LIMIT) do |i|
+          t = i + @tick * 23 + trace.channel
+          (90 + 12 * Math.sin(t // 47) + 2 * Math.sin(t * 2.3)).to_f32
+        end
+        trace.append(offset, samples)
+        trace.scope.capabilities["signal"] = "Available"
+      end
       if @generation != @store.generation || @tab != @store.tab
         @generation = @store.generation
         @tab = @store.tab

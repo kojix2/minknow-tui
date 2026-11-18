@@ -35,6 +35,7 @@ bin/minknow-tui --host localhost --port 9501
 | v | Switch Quality graphs or Device history graphs |
 | h | Show full read-length range or trim 1% at each end |
 | d / u | Activity: detailed/grouped states; percent/absolute time |
+| t (Pores) | Open the selected channel's live current trace. Esc returns to the pore map. |
 | p / r / a | Select position / protocol run / acquisition |
 | i | Inspect full IDs, run settings, channel time fractions and API status |
 | / | Filter positions and runs |
@@ -51,6 +52,11 @@ on screen. `HISTORY` includes earlier acquisitions within a running protocol.
 Pores always shows the current device. Returning to a statistics tab restores
 the selected history. Press `r`, then Enter to follow the current run and its
 acquisitions again. If the position is idle, this follows the next run when it starts.
+
+During acquisition, press `5`, select a channel with the arrow keys, and press
+`t` to see its calibrated current in picoamps. The viewer keeps the latest
+1,000 samples (200 ms at 5 kHz) and subscribes only while open. Adaptive
+sampling and basecalling are optional. In `--demo`, the waveform is generated.
 
 ## Connection
 

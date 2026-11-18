@@ -230,6 +230,21 @@ describe MinknowTui::Store do
   end
 end
 
+describe MinknowTui::SignalTrace do
+  it "preserves sample order and breaks the trace at gaps and non-finite values" do
+    trace = MinknowTui::SignalTrace.new(MinknowTui::Position.new("X1"), "run", 1)
+    trace.append(5_u64, Array.new(1500, &.to_f32))
+    trace.samples.size.should eq(1000)
+    trace.samples.first.should eq(500_f32)
+    trace.append(1504_u64, [1499_f32, 1500_f32])
+    trace.samples.to_a.last(2).should eq([1499_f32, 1500_f32])
+    trace.append(1510_u64, [3_f32, 4_f32])
+    trace.samples.to_a.should eq([3_f32, 4_f32])
+    trace.append(1512_u64, [Float32::NAN, 1_f32])
+    trace.samples.to_a.should eq([1_f32])
+  end
+end
+
 describe MinknowTui::Options do
   it "validates the effective port after CLI overrides and retains environment defaults" do
     with_port_environment("obsolete") do

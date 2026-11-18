@@ -129,6 +129,7 @@ module MinknowTui
     @selection_generation = UInt64::MAX
     @selected_tab = -1
     @channel_acquisition : String? = nil
+    @subscribed_trace : SignalTrace?
     @local_auth_token : String? = nil
     @config : ConnectionConfig
     @manager_channel : GRPC::Channel? = nil
@@ -167,6 +168,7 @@ module MinknowTui
     end
 
     def stop
+      @store.close_trace
       @root.stop
       @details.stop
       @logs.stop
@@ -414,6 +416,7 @@ module MinknowTui
       if old = @positions[raw.name]?
         if old[0].port != port
           if @store.position_id == raw.name
+            @store.close_trace
             @details.stop
             @logs.stop
           end
@@ -477,6 +480,10 @@ module MinknowTui
         p.pore_updated_at = nil
       end
       p.current_acquisition = id
+      p.acquiring_signal = raw.state == MA::Acquisition::AcquisitionState::ACQUISITION_RUNNING
+      if (rate = raw.config_summary.try(&.sample_rate)) && rate > 0
+        p.live.sample_rate = rate
+      end
       p.live.basecalling_enabled = raw.config_summary.try(&.basecalling_enabled)
       raw.yield_summary.try { |summary| Decode.summary(p.live, summary) }
       @store.sync_selection if @store.position_id == p.name
@@ -578,6 +585,7 @@ module MinknowTui
     end
 
     private def selection_changed
+      sync_trace
       if @selected_position != @store.position_id
         @logs.stop
         @logs = Scope.new
@@ -609,6 +617,32 @@ module MinknowTui
         elsif @store.acquisition_id
           start_detail(entry[0], @details, entry[2])
         end
+      end
+    end
+
+    private def sync_trace
+      @store.reconcile_trace
+      trace = @store.trace
+      return if trace == @subscribed_trace
+      @subscribed_trace = trace
+      return unless trace && (entry = @positions[trace.position.name]?)
+      client = MA::Data::DataService::Client.new(entry[2])
+      request = MA::Data::GetSignalMinMaxRequest.new
+      request.first_channel = request.last_channel = trace.channel.to_u32
+      # One sample per window: the minimum is the original calibrated sample.
+      request.window_size = 1_u32
+      request.calibrated_data = true
+      scope = trace.scope
+      watch(scope, scope.capabilities, "signal") do
+        scope.capabilities["signal"] = "Waiting for signal"
+        consume(scope, client.get_signal_min_max(request, stream_context)) do |packet|
+          next unless packet.skipped_channels == 0 && (data = packet.channels.first?)
+          next if data.calibrated_minima.empty?
+          trace.append(packet.samples_since_start, data.calibrated_minima)
+          scope.capabilities["signal"] = "Available"
+        end
+        # A live subscription is expected to stay open until the viewer closes.
+        raise IO::EOFError.new if scope.active?
       end
     end
 

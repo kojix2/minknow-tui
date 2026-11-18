@@ -21,6 +21,32 @@ private def with_ui(width, height, iterm2 = false, &)
 end
 
 describe "minknow-tui headless UI" do
+  it "opens the selected live pore trace and restores the pore grid on Escape" do
+    with_ui(80, 24) do |store, demo, interface, window|
+      window.press('5')
+      window.press(Tput::Key::Right)
+      window.press('t')
+      trace = store.trace || fail "Expected a trace for the selected channel"
+      trace.channel.should eq(2)
+      dialog = interface.dialog.as(MinknowTui::SignalDialog)
+      dialog.info.content.should contain("Waiting")
+      demo.update
+      interface.refresh
+      window.repaint
+      dialog.chart.series.first.points.size.should eq(MinknowTui::SignalTrace::LIMIT)
+      window.dump.to_s.should contain("Time within trace (ms)")
+      window.press(Tput::Key::Escape)
+      trace.scope.active?.should be_false
+      store.trace.should be_nil
+      interface.pores.selected_channel.should eq(2)
+      window.focused.should eq(interface.pores.grid)
+      store.select_position("X2")
+      interface.refresh
+      window.press('t')
+      interface.dialog.should be_nil
+    end
+  end
+
   it "keeps run states visible beside long sample names in the sidebar" do
     with_ui(120, 36) do |store, _, interface, window|
       view = interface.runs_view

@@ -14,6 +14,33 @@ private def with_token_file(contents : String, &)
 end
 
 describe "MinKNOW compatibility over local HTTP/2" do
+  it "streams calibrated samples on demand and cancels on close or acquisition change" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each(&.signal_available=(true))
+      api.start
+      wait_for { store.positions["X1"]?.try(&.trace_available?) == true }
+      store.select_position("X1")
+      store.select_run("old")
+      store.tab = 4
+      calls.any?(&.ends_with?("/get_signal_min_max")).should be_false
+      trace = store.open_trace(79) || fail "Expected a live signal subscription"
+      wait_for { trace.samples.size == 3 }
+      trace.samples.to_a.should eq([70_f32, 125_f32, 71_f32])
+      calls.should contain("signal:79-79:true:1")
+      store.close_trace
+      wait_for { calls.includes?("signal closed:79") }
+      store.open_trace(80)
+      wait_for { calls.includes?("signal:80-80:true:1") }
+      peers.each(&.current_acquisition_id=("new-seq"))
+      wait_for { calls.includes?("signal closed:80") }
+      store.trace.should be_nil
+      store.run_id.should eq("old")
+      peers.each(&.acquisition_state=(MinknowApi::Acquisition::AcquisitionState::ACQUISITION_PAUSED))
+      wait_for { store.position.try(&.acquiring_signal?) == false }
+      store.open_trace(80).should be_nil
+    end
+  end
+
   it "reports live statistics as available before their streams finish" do
     with_fake_minknow do |api, store, peers, _|
       peers.each do |peer|

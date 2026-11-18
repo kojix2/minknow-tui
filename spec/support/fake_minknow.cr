@@ -15,6 +15,7 @@ class FakeMinKnow < GRPC::Service
   property? statistics_available = false
   property? keep_statistics_open = false
   property? channels_available = false
+  property? signal_available = false
   property? remaining_available = false
   property? basecalling_enabled = true
   property? watch_positions_available = false
@@ -24,6 +25,7 @@ class FakeMinKnow < GRPC::Service
   property watch_position_names : Array(String)? = nil
   property positions_delay = 0.seconds
   property current_acquisition_id = "current-seq"
+  property acquisition_state = MA::Acquisition::AcquisitionState::ACQUISITION_RUNNING
   property channel_label = "Sequencing"
   property auth_token : String? = nil
   property local_token_path = ""
@@ -88,7 +90,7 @@ class FakeMinKnow < GRPC::Service
   def server_streaming?(method : String) : Bool
     {"flow_cell_positions", "watch_flow_cell_positions", "stream_instance_activity", "stream_notifications", "get_user_messages",
      "stream_acquisition_output", "stream_duty_time", "stream_read_length_histogram", "stream_temperature", "get_channel_states",
-     "stream_bias_voltages", "stream_q_score_histogram", "stream_basecall_boxplots", "stream_updates"}.includes?(method)
+     "stream_bias_voltages", "stream_q_score_histogram", "stream_basecall_boxplots", "stream_updates", "get_signal_min_max"}.includes?(method)
   end
 
   def dispatch_server_stream(method : String, request : Bytes, ctx : GRPC::ServerContext, writer : GRPC::RawResponseStream) : GRPC::Status
@@ -96,6 +98,7 @@ class FakeMinKnow < GRPC::Service
     public_method = {"flow_cell_positions", "watch_flow_cell_positions"}.includes?(method)
     return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authorized?(ctx, public_method)
     return watch_positions(writer) if method == "watch_flow_cell_positions"
+    return signal_stream(request, writer, ctx) if method == "get_signal_min_max"
     if method == "stream_instance_activity" && activity_available?
       writer.send_raw(MA::Instance::StreamInstanceActivityResponse.new.encode)
       return GRPC::Status.ok
@@ -115,22 +118,7 @@ class FakeMinKnow < GRPC::Service
       writer.send_raw(MA::RunUntil::StreamUpdatesResponse.new.tap(&.update=(update)).encode)
       return GRPC::Status.ok
     end
-    if method == "get_channel_states" && channels_available?
-      channel_request = MA::Data::GetChannelStatesRequest.decode(request)
-      @calls << "channels:#{channel_request.first_channel}-#{channel_request.last_channel}"
-      ["pore", "unblocking"].each_with_index do |state, index|
-        response = MA::Data::GetChannelStatesResponse.new
-        response.channel_states = [MA::Data::GetChannelStatesResponse::ChannelStateData.new.tap do |value|
-          value.channel = 1_u32
-          value.state_name = state
-          value.acquisition_raw_index = (100 + index).to_u64
-          value.config = MA::Device::ReturnedChannelConfiguration.new.tap(&.well=(2_u32))
-        end]
-        writer.send_raw(response.encode)
-      end
-      writer.send_raw(MA::Data::GetChannelStatesResponse.new.encode)
-      return GRPC::Status.ok
-    end
+    return channel_states(request, writer) if method == "get_channel_states"
     if statistics_available? && service_full_name == "minknow_api.statistics.StatisticsService"
       return statistics_stream(method, request, writer, ctx)
     end
@@ -149,6 +137,41 @@ class FakeMinKnow < GRPC::Service
 
   private def authorized?(ctx, public_method)
     authenticated? && (public_method || auth_token.nil? || ctx.metadata["local-auth"]? == auth_token)
+  end
+
+  private def channel_states(request, writer)
+    return GRPC::Status.unimplemented unless channels_available?
+    channel_request = MA::Data::GetChannelStatesRequest.decode(request)
+    @calls << "channels:#{channel_request.first_channel}-#{channel_request.last_channel}"
+    ["pore", "unblocking"].each_with_index do |state, index|
+      response = MA::Data::GetChannelStatesResponse.new
+      response.channel_states = [MA::Data::GetChannelStatesResponse::ChannelStateData.new.tap do |value|
+        value.channel = 1_u32
+        value.state_name = state
+        value.acquisition_raw_index = (100 + index).to_u64
+        value.config = MA::Device::ReturnedChannelConfiguration.new.tap(&.well=(2_u32))
+      end]
+      writer.send_raw(response.encode)
+    end
+    writer.send_raw(MA::Data::GetChannelStatesResponse.new.encode)
+    GRPC::Status.ok
+  end
+
+  private def signal_stream(request, writer, ctx)
+    return GRPC::Status.unimplemented unless signal_available?
+    req = MA::Data::GetSignalMinMaxRequest.decode(request)
+    @calls << "signal:#{req.first_channel}-#{req.last_channel}:#{req.calibrated_data}:#{req.window_size}"
+    response = MA::Data::GetSignalMinMaxResponse.new
+    response.samples_since_start = 50_u64
+    data = MA::Data::GetSignalMinMaxResponse::ChannelData.new
+    data.calibrated_minima = data.calibrated_maxima = [70_f32, 125_f32, 71_f32]
+    response.channels = [data]
+    writer.send_raw(response.encode)
+    until ctx.cancelled?
+      sleep 0.02.seconds
+    end
+    @calls << "signal closed:#{req.first_channel}"
+    GRPC::Status.ok
   end
 
   private def watch_positions(writer)
@@ -267,6 +290,7 @@ class FakeMinKnow < GRPC::Service
   private def acquisition(id)
     MA::Acquisition::AcquisitionRunInfo.new.tap do |info|
       info.run_id = id
+      info.state = Proto::OpenEnum(MA::Acquisition::AcquisitionState).new(acquisition_state)
       info.config_summary = MA::Acquisition::AcquisitionConfigSummary.new.tap do |config|
         config.basecalling_enabled = basecalling_enabled?
         config.basecalling_model_version = "test-model"
