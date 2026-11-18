@@ -124,6 +124,8 @@ module MinknowTui
     @selected_position : String? = nil
     @selection_generation = UInt64::MAX
     @selected_tab = -1
+    @channel_acquisition : String? = nil
+    @local_auth_token : String? = nil
     @config : Minknow::ConnectionConfig
     @manager_channel : GRPC::Channel? = nil
 
@@ -171,11 +173,17 @@ module MinknowTui
     end
 
     private def context : GRPC::ClientContext
-      GRPC::ClientContext.new(metadata: @config.effective_metadata, deadline: 5.seconds)
+      GRPC::ClientContext.new(metadata: metadata, deadline: 5.seconds)
     end
 
     private def stream_context : GRPC::ClientContext
-      GRPC::ClientContext.new(metadata: @config.effective_metadata)
+      GRPC::ClientContext.new(metadata: metadata)
+    end
+
+    private def metadata : Hash(String, String)
+      values = @config.effective_metadata
+      @local_auth_token.try { |token| values["local-auth"] = token }
+      values
     end
 
     # Resolve local authentication explicitly with a deadline. The shard's
@@ -185,9 +193,9 @@ module MinknowTui
       return unless @config.localhost? && enabled && @config.authentication_token.nil?
       response = client.local_authentication_token_path(MA::Manager::LocalAuthenticationTokenPathRequest.new, context)
       return unless @root.active? && File.file?(response.path)
-      token = JSON.parse(File.read(response.path))["token"]?.try(&.as_s?)
-      @config = Minknow::ConnectionConfig.new(host: @config.host, port: @config.port,
-        tls: @config.tls?, authentication_token: token, auto_local_auth: false)
+      payload = JSON.parse(File.read(response.path)).as_h?
+      token = payload.try { |object| object["token"]?.try(&.as_s?) }
+      @local_auth_token = token if token && !token.empty?
     rescue GRPC::StatusError
       # Guest access and explicit client certificates can still work.
     rescue IO::Error | JSON::ParseException
@@ -229,6 +237,7 @@ module MinknowTui
       end
       watch_positions(client)
       poll(@root, @store.capabilities, "manager_health", 15.seconds) do
+        authenticate(client)
         client.get_version_info(MA::Manager::GetVersionInfoRequest.new, context)
         if @root.active?
           @store.connection = "Connected"
@@ -257,20 +266,29 @@ module MinknowTui
     end
 
     private def watch_positions(client)
+      watch_updates = Set(String).new
       poll(@root, @store.capabilities, "positions", 5.seconds) do
-        if @store.capabilities["watch_positions"]? == "Unsupported" || @store.positions.empty?
-          values = [] of MA::Manager::FlowCellPosition
-          consume(@root, client.flow_cell_positions(MA::Manager::FlowCellPositionsRequest.new, context)) { |response| values.concat response.positions }
-          if @root.active?
-            values.each { |position| update_position(position) }
-            (@store.positions.keys - values.map(&.name)).each { |id| remove_position(id) }
-          end
+        # Reconcile even with watch support: removals during an interruption
+        # are absent from the next stream's initial additions.
+        watch_updates.clear
+        values = [] of MA::Manager::FlowCellPosition
+        consume(@root, client.flow_cell_positions(MA::Manager::FlowCellPositionsRequest.new, context)) { |response| values.concat response.positions }
+        if @root.active?
+          # A slow snapshot must not undo a newer watch update or removal.
+          values.each { |position| update_position(position) unless watch_updates.includes?(position.name) }
+          (@store.positions.keys - values.map(&.name)).each { |id| remove_position(id) unless watch_updates.includes?(id) }
         end
       end
       watch(@root, @store.capabilities, "watch_positions") do
         consume(@root, client.watch_flow_cell_positions(MA::Manager::WatchFlowCellPositionsRequest.new, stream_context)) do |response|
-          (response.additions + response.changes).each { |position| update_position(position) }
-          response.removals.each { |id| remove_position(id) }
+          (response.additions + response.changes).each do |position|
+            watch_updates << position.name
+            update_position(position)
+          end
+          response.removals.each do |id|
+            watch_updates << id
+            remove_position(id)
+          end
         end
       end
     end
@@ -431,6 +449,7 @@ module MinknowTui
       if id != p.current_acquisition
         p.live = Metrics.new
         p.pore_states.clear
+        p.state_styles.clear
         p.pore_updated_at = nil
       end
       p.current_acquisition = id
@@ -553,11 +572,13 @@ module MinknowTui
           end
         end
       end
-      return if @selection_generation == @store.generation && @selected_tab == @store.tab
+      channel_acquisition = @store.tab == 4 ? @store.position.try(&.current_acquisition) : nil
+      return if @selection_generation == @store.generation && @selected_tab == @store.tab && @channel_acquisition == channel_acquisition
       @details.stop
       @details = Scope.new
       @selection_generation = @store.generation
       @selected_tab = @store.tab
+      @channel_acquisition = channel_acquisition
       if entry = @positions[@store.position_id]?
         if @store.tab == 4
           start_channels(entry[0], @details, entry[2])

@@ -16,6 +16,14 @@ class FakeMinKnow < GRPC::Service
   property? channels_available = false
   property? remaining_available = false
   property? basecalling_enabled = true
+  property? watch_positions_available = false
+  property position_names = ["X1"]
+  property watch_position_names : Array(String)? = nil
+  property positions_delay = 0.seconds
+  property current_acquisition_id = "current-seq"
+  property channel_label = "Sequencing"
+  property auth_token : String? = nil
+  property local_token_path = ""
 
   def initialize(@service_full_name : String, @port : Int32, @calls = [] of String)
   end
@@ -26,12 +34,15 @@ class FakeMinKnow < GRPC::Service
   # ameba:disable Metrics/CyclomaticComplexity
   def dispatch(method : String, request_body : Bytes, ctx : GRPC::ServerContext) : {Bytes, GRPC::Status}
     @calls << "#{service_full_name}/#{method}"
-    return {Bytes.empty, GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED)} unless authenticated?
+    public_method = {"get_version_info", "local_authentication_token_path"}.includes?(method)
+    return {Bytes.empty, GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED)} unless authorized?(ctx, public_method)
     response = case {service_full_name, method}
                when {"minknow_api.manager.ManagerService", "get_version_info"}
                  MA::Instance::GetVersionInfoResponse.new.tap do |reply|
                    reply.minknow = MA::Instance::GetVersionInfoResponse::MinknowVersion.new.tap(&.full=("6.0.0-fixture"))
                  end
+               when {"minknow_api.manager.ManagerService", "local_authentication_token_path"}
+                 MA::Manager::LocalAuthenticationTokenPathResponse.new.tap(&.path=(local_token_path))
                when {"minknow_api.manager.ManagerService", "describe_host"}
                  MA::Manager::DescribeHostResponse.new.tap(&.description=("Fake MinKNOW"))
                when {"minknow_api.protocol.ProtocolService", "list_protocol_runs"}
@@ -43,7 +54,7 @@ class FakeMinKnow < GRPC::Service
                  protocol(MA::Protocol::GetRunInfoRequest.decode(request_body).run_id)
                when {"minknow_api.acquisition.AcquisitionService", "get_current_acquisition_run"}
                  return {Bytes.empty, GRPC::Status.new(GRPC::StatusCode::FAILED_PRECONDITION)} unless active_run?
-                 acquisition("current-seq")
+                 acquisition(current_acquisition_id)
                when {"minknow_api.acquisition.AcquisitionService", "get_acquisition_info"}
                  id = MA::Acquisition::GetAcquisitionRunInfoRequest.decode(request_body).run_id
                  @calls << "summary:#{id}"
@@ -76,7 +87,9 @@ class FakeMinKnow < GRPC::Service
 
   def dispatch_server_stream(method : String, request : Bytes, ctx : GRPC::ServerContext, writer : GRPC::RawResponseStream) : GRPC::Status
     @calls << "#{service_full_name}/#{method}"
-    return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authenticated?
+    public_method = {"flow_cell_positions", "watch_flow_cell_positions"}.includes?(method)
+    return GRPC::Status.new(GRPC::StatusCode::UNAUTHENTICATED) unless authorized?(ctx, public_method)
+    return watch_positions(writer) if method == "watch_flow_cell_positions"
     if method == "stream_instance_activity" && activity_available?
       writer.send_raw(MA::Instance::StreamInstanceActivityResponse.new.encode)
       return GRPC::Status.ok
@@ -116,17 +129,38 @@ class FakeMinKnow < GRPC::Service
       return statistics_stream(method, request, writer)
     end
     return GRPC::Status.unimplemented unless method == "flow_cell_positions"
+    stream_positions(writer)
+  end
+
+  private def stream_positions(writer)
     response = MA::Manager::FlowCellPositionsResponse.new
-    unless empty?
-      position = MA::Manager::FlowCellPosition.new
-      position.name = "X1"
-      position.state = Proto::OpenEnum(MA::Manager::FlowCellPosition::State).new(1)
-      position.rpc_ports = MA::Manager::FlowCellPosition::RpcPorts.new.tap(&.secure=(@port.to_u32))
-      response.positions = [position]
-      response.total_count = 1
-    end
+    response.positions = positions
+    response.total_count = response.positions.size.to_i32
+    sleep positions_delay if positions_delay > 0.seconds
     writer.send_raw(response.encode)
     GRPC::Status.ok
+  end
+
+  private def authorized?(ctx, public_method)
+    authenticated? && (public_method || auth_token.nil? || ctx.metadata["local-auth"]? == auth_token)
+  end
+
+  private def watch_positions(writer)
+    return GRPC::Status.unimplemented unless watch_positions_available?
+    response = MA::Manager::WatchFlowCellPositionsResponse.new.tap(&.additions=(positions(watch_position_names || position_names)))
+    writer.send_raw(response.encode)
+    GRPC::Status.unavailable("simulated watch interruption")
+  end
+
+  private def positions(names = position_names)
+    return [] of MA::Manager::FlowCellPosition if empty?
+    names.map do |name|
+      MA::Manager::FlowCellPosition.new.tap do |position|
+        position.name = name
+        position.state = Proto::OpenEnum(MA::Manager::FlowCellPosition::State).new(1)
+        position.rpc_ports = MA::Manager::FlowCellPosition::RpcPorts.new.tap(&.secure=(@port.to_u32))
+      end
+    end
   end
 
   private def statistics_stream(method, request, writer)
@@ -213,7 +247,7 @@ class FakeMinKnow < GRPC::Service
       run.run_id = id
       run.protocol_id = "sequencing"
       run.output_path = "/data/#{id}"
-      run.acquisition_run_ids = ["#{id}-cal", "#{id}-seq"]
+      run.acquisition_run_ids = id == "current" ? ["current-cal", "current-seq", current_acquisition_id].uniq : ["#{id}-cal", "#{id}-seq"]
       run.start_time = Google::Protobuf::Timestamp.new.tap(&.seconds=(100_i64))
       run.end_time = Google::Protobuf::Timestamp.new.tap(&.seconds=(200_i64)) if id == "old"
     end
@@ -228,7 +262,7 @@ class FakeMinKnow < GRPC::Service
         config.alignment_reference_files = ["reference.fa"]
         state = MA::Acquisition::ChannelStateInfo::ChannelState.new
         state.name = "strand"
-        state.style = MA::Acquisition::ChannelStateInfo::Style.new.tap { |style| style.label = "Sequencing"; style.colour = "#52d687" }
+        state.style = MA::Acquisition::ChannelStateInfo::Style.new.tap { |style| style.label = channel_label; style.colour = "#52d687" }
         group = MA::Acquisition::ChannelStateInfo::Group.new
         group.name = "Sequencing"
         group.states = [state]
@@ -251,7 +285,7 @@ def wait_for(span = 8.seconds, & : -> Bool)
   end
 end
 
-def with_fake_minknow(&)
+def with_fake_minknow(*, local_auth = false, authentication_token : String? = nil, &)
   listener = TCPServer.new("127.0.0.1", 0)
   port = listener.local_address.port
   listener.close
@@ -264,8 +298,10 @@ def with_fake_minknow(&)
   server.bind("127.0.0.1:#{port}")
   previous_tls = ENV["MINKNOW_TLS"]?
   previous_local = ENV["MINKNOW_API_USE_LOCAL_TOKEN"]?
+  previous_token = ENV["MINKNOW_AUTH_TOKEN"]?
   ENV["MINKNOW_TLS"] = "false"
-  ENV["MINKNOW_API_USE_LOCAL_TOKEN"] = "false"
+  ENV["MINKNOW_API_USE_LOCAL_TOKEN"] = local_auth.to_s
+  authentication_token ? (ENV["MINKNOW_AUTH_TOKEN"] = authentication_token) : ENV.delete("MINKNOW_AUTH_TOKEN")
   server.start
   store = MinknowTui::Store.new
   options = MinknowTui::Options.new(["--host", "127.0.0.1", "--port", port.to_s])
@@ -277,5 +313,6 @@ def with_fake_minknow(&)
     server.stop
     previous_tls ? (ENV["MINKNOW_TLS"] = previous_tls) : ENV.delete("MINKNOW_TLS")
     previous_local ? (ENV["MINKNOW_API_USE_LOCAL_TOKEN"] = previous_local) : ENV.delete("MINKNOW_API_USE_LOCAL_TOKEN")
+    previous_token ? (ENV["MINKNOW_AUTH_TOKEN"] = previous_token) : ENV.delete("MINKNOW_AUTH_TOKEN")
   end
 end

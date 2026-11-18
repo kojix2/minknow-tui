@@ -275,6 +275,7 @@ module MinknowTui
     property run_id : String? = nil
     property acquisition_id : String? = nil
     property? follow_current = true
+    @follow_acquisition = true
     getter tab = 0
     property filter = ""
     property detail = Metrics.new
@@ -312,6 +313,7 @@ module MinknowTui
       return if id == position_id
       @position_id = id
       @follow_current = true
+      @follow_acquisition = true
       @run_id = nil
       @acquisition_id = nil
       sync_selection
@@ -320,6 +322,7 @@ module MinknowTui
 
     def select_run(id : String?)
       @follow_current = id == position.try(&.current_run)
+      @follow_acquisition = true
       @run_id = id
       @acquisition_id = nil
       sync_selection
@@ -327,6 +330,7 @@ module MinknowTui
     end
 
     def select_acquisition(id : String?)
+      @follow_acquisition = id == position.try(&.current_acquisition)
       return if @acquisition_id == id
       @acquisition_id = id
       reset_detail
@@ -337,19 +341,28 @@ module MinknowTui
       if p = position
         @follow_current = true if run_id && !p.runs.has_key?(run_id)
         if follow_current?
-          @run_id = p.current_run || p.history.first?.try(&.id)
+          next_run = p.current_run || p.history.first?.try(&.id)
+          @follow_acquisition = true if next_run != run_id
+          @run_id = next_run
         end
-        if r = run
-          unless r.acquisitions.includes?(acquisition_id)
-            current = p.current_acquisition
-            @acquisition_id = current && r.acquisitions.includes?(current) ? current : r.acquisitions.last?
-          end
-        else
-          @acquisition_id = nil
-        end
+        sync_acquisition(p)
       end
       reset_detail if old != {run_id, acquisition_id}
       changed
+    end
+
+    private def sync_acquisition(p : Position)
+      if r = run
+        current = p.current_acquisition
+        if @follow_acquisition && current && r.acquisitions.includes?(current)
+          @acquisition_id = current
+        elsif !r.acquisitions.includes?(acquisition_id)
+          @acquisition_id = current && r.acquisitions.includes?(current) ? current : r.acquisitions.last?
+          @follow_acquisition = true
+        end
+      else
+        @acquisition_id = nil
+      end
     end
 
     def reset_detail

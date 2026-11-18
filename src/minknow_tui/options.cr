@@ -9,22 +9,23 @@ module MinknowTui
     property? exit_requested = false
 
     def initialize(args = ARGV, output : IO = STDOUT)
-      if port = ENV["MINKNOW_PORT"]?
-        self.port = parse_port(port)
-        @explicit_port = true
-      end
+      port_value = ENV["MINKNOW_PORT"]?
       OptionParser.parse(args) do |parser|
         parser.banner = "Usage: minknow-tui [--host HOST] [--port PORT] [--demo]"
         parser.on("--host HOST", "MinKNOW Manager host (default: localhost)") { |v| @host = v }
         parser.on("--port PORT", "Manager port; disables automatic 9502 fallback") do |v|
-          @port = parse_port(v)
-          @explicit_port = true
+          port_value = v
         end
         parser.on("--demo", "Monitor simulated data without connecting to MinKNOW") { @demo = true }
         parser.on("-h", "--help", "Show help") { output.puts parser; @exit_requested = true }
         parser.on("--version", "Show version") { output.puts VERSION; @exit_requested = true }
         parser.invalid_option { |flag| raise ArgumentError.new("Unknown option: #{flag}") }
         parser.unknown_args { |remaining| raise ArgumentError.new("Unexpected arguments: #{remaining.join(" ")}") unless remaining.empty? }
+      end
+      return if exit_requested?
+      if value = port_value
+        @port = parse_port(value)
+        @explicit_port = true
       end
       raise ArgumentError.new("Host must not be empty") if @host.empty?
     end

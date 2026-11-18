@@ -2,6 +2,16 @@ require "spec"
 require "../src/minknow_tui/model"
 require "../src/minknow_tui/options"
 
+private def with_port_environment(value : String, &)
+  previous = ENV["MINKNOW_PORT"]?
+  ENV["MINKNOW_PORT"] = value
+  begin
+    yield
+  ensure
+    previous ? (ENV["MINKNOW_PORT"] = previous) : ENV.delete("MINKNOW_PORT")
+  end
+end
+
 describe MinknowTui::Series do
   it "replaces overlapping cumulative snapshots and bounds long histories" do
     series = MinknowTui::Series.new
@@ -91,6 +101,37 @@ describe MinknowTui::Position do
 end
 
 describe MinknowTui::Store do
+  it "follows new acquisitions while preserving explicit history selection and allowing live follow to resume" do
+    store = MinknowTui::Store.new
+    position = MinknowTui::Position.new("X1")
+    run = MinknowTui::Run.new("protocol")
+    run.acquisitions = ["calibration"]
+    position.runs[run.id] = run
+    position.current_run = run.id
+    position.current_acquisition = "calibration"
+    store.positions[position.name] = position
+    store.select_position("X1")
+    generation = store.generation
+
+    run.acquisitions << "sequencing"
+    position.current_acquisition = "sequencing"
+    store.sync_selection
+    store.acquisition_id.should eq("sequencing")
+    store.generation.should be > generation
+
+    store.select_acquisition("calibration")
+    run.acquisitions << "sequencing-2"
+    position.current_acquisition = "sequencing-2"
+    store.sync_selection
+    store.acquisition_id.should eq("calibration")
+
+    store.select_acquisition("sequencing-2")
+    run.acquisitions << "sequencing-3"
+    position.current_acquisition = "sequencing-3"
+    store.sync_selection
+    store.acquisition_id.should eq("sequencing-3")
+  end
+
   it "clears stale detail status on selection and tab changes while retaining unsupported APIs" do
     store = MinknowTui::Store.new
     position = MinknowTui::Position.new("X1")
@@ -160,6 +201,28 @@ describe MinknowTui::Store do
 end
 
 describe MinknowTui::Options do
+  it "validates the effective port after CLI overrides and retains environment defaults" do
+    with_port_environment("obsolete") do
+      options = MinknowTui::Options.new(["--port", "9502"])
+      options.port.should eq(9502)
+      options.explicit_port?.should be_true
+      expect_raises(ArgumentError) { MinknowTui::Options.new([] of String) }
+    end
+    with_port_environment("9502") do
+      options = MinknowTui::Options.new([] of String)
+      options.port.should eq(9502)
+      options.explicit_port?.should be_true
+    end
+  end
+
+  it "shows help and version even when the environment port is invalid" do
+    with_port_environment("obsolete") do
+      ["--help", "--version"].each do |flag|
+        MinknowTui::Options.new([flag], IO::Memory.new).exit_requested?.should be_true
+      end
+    end
+  end
+
   it "supports demo and explicit manager ports without connecting" do
     options = MinknowTui::Options.new(["--demo", "--host", "example", "--port", "9502"])
     options.demo?.should be_true

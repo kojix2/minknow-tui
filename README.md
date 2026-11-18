@@ -63,12 +63,15 @@ and authentication errors do not trigger port changes.
 
 Local token discovery and unary calls time out after five seconds. Remote
 connections require explicit authentication and a matching certificate.
+Automatically discovered local tokens are refreshed while monitoring.
 
 ## Data and compatibility
 
 Statistics belong to the selected acquisition. Calibration and sequencing data
 are not combined. Estimated bases, basecalled bases and basecall counts are
 shown separately. Pore occupancy is not a live pore count.
+Live selection follows acquisition changes; manually selected historical
+acquisitions stay selected.
 
 Activity shows channel state time by minute, grouped into five-minute buckets
 after 48 minutes. Channel names and colors come from acquisition metadata when
@@ -91,9 +94,11 @@ Tests use a fake HTTP/2 server and headless UI; real hardware is not yet verifie
 
 `.github/workflows/build.yml` prepares the CI environments and runs
 `.github/scripts/build.sh` to test, build and package Linux and macOS binaries.
-The script builds `libnghttp2.a` from the latest stable source release.
+The script builds `libnghttp2.a` from nghttp2 1.71.0 source.
 Linux uses `crystallang/crystal:latest-alpine` for fully static linking.
-It also builds the latest stable unibilium to read modern terminfo files.
+It also builds unibilium 2.1.4 to read modern terminfo files.
+Native source versions are pinned in the script; builds do not query GitHub's
+releases API.
 macOS statically links external libraries and allows only OS system libraries
 as dynamic dependencies. Linkage and CLI/demo startup are checked before packaging.
 

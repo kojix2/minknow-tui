@@ -1,7 +1,118 @@
 require "spec"
+require "file/tempfile"
 require "./support/fake_minknow"
 
+private def with_token_file(contents : String, &)
+  file = File.tempfile("minknow-tui-token", ".json")
+  file.close
+  File.write(file.path, contents)
+  begin
+    yield file.path
+  ensure
+    file.delete
+  end
+end
+
 describe "MinKNOW compatibility over local HTTP/2" do
+  it "preserves newer watch additions when a delayed position snapshot completes" do
+    with_fake_minknow do |api, store, peers, _|
+      peers.each do |peer|
+        peer.watch_positions_available = true
+        peer.watch_position_names = ["X1", "X2"]
+        peer.positions_delay = 0.25.seconds
+      end
+      api.start
+      wait_for { store.positions.has_key?("X2") }
+      store.select_position("X2")
+      peers.each(&.position_names=(["X1", "X2"]))
+      wait_for { store.capabilities["positions"]? == "Available" }
+      store.positions.has_key?("X2").should be_true
+      store.position_id.should eq("X2")
+    end
+  end
+
+  it "reconciles positions removed during a watch interruption" do
+    with_fake_minknow do |api, store, peers, calls|
+      peers.each do |peer|
+        peer.watch_positions_available = true
+        peer.position_names = ["X1", "X2"]
+      end
+      api.start
+      wait_for { store.positions.has_key?("X2") }
+      store.select_position("X2")
+      peers.each(&.position_names=(["X1"]))
+      wait_for { calls.count(&.ends_with?("/watch_flow_cell_positions")) >= 2 }
+      wait_for { !store.positions.has_key?("X2") }
+      store.positions.has_key?("X1").should be_true
+      store.position_id.should be_nil
+    end
+  end
+
+  it "refreshes local authentication after the discovered token changes" do
+    with_token_file({"token" => "initial"}.to_json) do |path|
+      with_fake_minknow(local_auth: true) do |api, store, peers, calls|
+        peers.each do |peer|
+          peer.auth_token = "initial"
+          peer.local_token_path = path
+        end
+        api.start
+        wait_for { store.capabilities["manager_health"]? == "Available" && store.positions["X1"]?.try(&.connected?) == true }
+        lookups = calls.count(&.ends_with?("/local_authentication_token_path"))
+        File.write(path, {"token" => "replaced"}.to_json)
+        peers.each(&.auth_token=("replaced"))
+        wait_for { store.positions["X1"].capabilities["current_protocol"]? == "Authentication required" }
+        wait_for(25.seconds) { store.positions["X1"].capabilities["current_protocol"]? == "Available" }
+        wait_for { store.positions["X1"].connected? }
+        calls.count(&.ends_with?("/local_authentication_token_path")).should be > lookups
+      end
+    end
+  end
+
+  it "retries discovery when the local token file is initially incomplete" do
+    with_token_file("[]") do |path|
+      with_fake_minknow(local_auth: true) do |api, store, peers, _|
+        peers.each do |peer|
+          peer.auth_token = "ready"
+          peer.local_token_path = path
+        end
+        api.start
+        wait_for { store.capabilities["manager_health"]? == "Available" && store.positions["X1"]?.try(&.capabilities["current_protocol"]?) == "Authentication required" }
+        File.write(path, {"token" => "ready"}.to_json)
+        wait_for(25.seconds) { store.positions["X1"].capabilities["current_protocol"]? == "Available" }
+      end
+    end
+  end
+
+  it "keeps an explicitly configured authentication token" do
+    with_fake_minknow(local_auth: true, authentication_token: "explicit") do |api, store, peers, calls|
+      peers.each(&.auth_token=("explicit"))
+      api.start
+      wait_for { store.capabilities["manager_health"]? == "Available" && store.positions["X1"]?.try(&.connected?) == true }
+      calls.any?(&.ends_with?("/local_authentication_token_path")).should be_false
+    end
+  end
+
+  it "reloads live channel styles on acquisition changes while historical selection stays fixed" do
+    with_fake_minknow do |api, store, peers, _|
+      peers.each(&.channels_available=(true))
+      api.start
+      wait_for { store.positions["X1"]?.try(&.runs.size) == 2 }
+      store.select_position("X1")
+      store.select_run("old")
+      store.tab = 4
+      position = store.positions["X1"]
+      wait_for { position.state_styles["strand"]?.try(&.label) == "Sequencing" }
+      generation = store.generation
+      peers.each do |peer|
+        peer.current_acquisition_id = "current-seq-2"
+        peer.channel_label = "New acquisition strand label"
+      end
+      wait_for { position.current_acquisition == "current-seq-2" && position.state_styles["strand"]?.try(&.label) == "New acquisition strand label" }
+      store.run_id.should eq("old")
+      store.generation.should eq(generation)
+    end
+  end
+
   it "streams live channels independently of selected history and unsubscribes on tab changes" do
     with_fake_minknow do |api, store, peers, calls|
       peers.each(&.channels_available=(true))

@@ -3,8 +3,9 @@ set -euo pipefail
 work=$(mktemp -d)
 prefix="$work/native"
 mkdir -p "$work/src" "$prefix/lib"
-url=$(curl -fsSL --retry 3 https://api.github.com/repos/nghttp2/nghttp2/releases/latest |
-  jq -er '[.assets[] | select(.name | test("^nghttp2-[0-9.]+\\.tar\\.xz$"))][0].browser_download_url')
+nghttp2_version=1.71.0
+unibilium_version=2.1.4
+url="https://github.com/nghttp2/nghttp2/releases/download/v$nghttp2_version/nghttp2-$nghttp2_version.tar.xz"
 curl -fsSL --retry 3 "$url" -o "$work/nghttp2.tar.xz"
 tar -xJf "$work/nghttp2.tar.xz" -C "$work/src" --strip-components=1
 cmake -S "$work/src" -B "$work/build" \
@@ -30,8 +31,7 @@ if [[ $(uname -s) == Darwin ]]; then
 else
   platform=linux
   # Alpine's unibilium can still have the old 4 KiB terminfo limit.
-  url=$(curl -fsSL --retry 3 https://api.github.com/repos/neovim/unibilium/releases/latest |
-    jq -er .tarball_url)
+  url="https://github.com/neovim/unibilium/archive/refs/tags/v$unibilium_version.tar.gz"
   mkdir -p "$work/unibilium"
   curl -fsSL --retry 3 "$url" -o "$work/unibilium.tar.gz"
   tar -xzf "$work/unibilium.tar.gz" -C "$work/unibilium" --strip-components=1
