@@ -37,7 +37,7 @@ if [[ $(uname -s) == Darwin ]]; then
   for dependency in openssl:libssl.a openssl:libcrypto.a bdw-gc:libgc.a \
     pcre2:libpcre2-8.a libyaml:libyaml.a unibilium:libunibilium.a; do
     formula=$(brew --prefix "${dependency%%:*}")
-    cp "$formula/lib/${dependency#*:}" "$prefix/lib/"
+    install -m 644 "$formula/lib/${dependency#*:}" "$prefix/lib/"
     export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$formula/lib/pkgconfig"
   done
   flags+=(--link-flags=-Wl,-search_paths_first)
