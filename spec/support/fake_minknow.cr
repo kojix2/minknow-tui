@@ -316,7 +316,7 @@ def with_fake_minknow(*, local_auth = false, authentication_token : String? = ni
   server.start
   store = MinknowTui::Store.new
   options = MinknowTui::Options.new(["--host", "127.0.0.1", "--port", port.to_s])
-  api = MinknowTui::Api.new(store, options)
+  api = MinknowTui::Api.new(store, options, poll_interval_scale: 0.02)
   begin
     yield api, store, peers, calls
   ensure

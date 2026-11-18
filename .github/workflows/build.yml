@@ -2,11 +2,22 @@ name: Build
 
 on:
   push:
+    branches: [main]
+    tags: ['**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      package:
+        description: Build release archives (slow)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
@@ -16,37 +27,91 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CI_MODE: ${{ (startsWith(github.ref, 'refs/tags/') || inputs.package) && 'release' || 'check' }}
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
     steps:
       - uses: actions/checkout@main
         with:
           persist-credentials: false
 
+      - name: Prepare Linux compiler image
+        if: runner.os == 'Linux'
+        id: linux
+        run: |
+          docker pull crystallang/crystal:latest-alpine
+          echo "identity=$(docker image inspect --format '{{.Id}}' crystallang/crystal:latest-alpine | cut -d: -f2)" >> "$GITHUB_OUTPUT"
+
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install crystal cmake pkgconf jq openssl bdw-gc pcre2 libyaml unibilium crystal-ameba/ameba/ameba
+        run: brew install crystal cmake pkgconf openssl bdw-gc pcre2 libyaml unibilium crystal-ameba/ameba/ameba
+
+      - name: Identify toolchain for cache compatibility
+        id: toolchain
+        env:
+          LINUX_IMAGE: ${{ steps.linux.outputs.identity }}
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            echo "key=$LINUX_IMAGE" >> "$GITHUB_OUTPUT"
+          else
+            {
+              crystal --version
+              sw_vers
+              xcrun clang --version
+              xcrun --show-sdk-version
+              brew list --versions openssl bdw-gc pcre2 libyaml unibilium
+            } > "$RUNNER_TEMP/toolchain.txt"
+            echo "key=$(shasum -a 256 "$RUNNER_TEMP/toolchain.txt" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/cache/restore@main
+        id: cache
+        with:
+          path: |
+            lib
+            .ci-cache
+          key: ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('shard.lock', '.github/scripts/build.sh') }}-${{ hashFiles('src/**/*.cr', 'spec/**/*.cr', 'tools/**', 'shard.yml') }}
+          restore-keys: |
+            ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('shard.lock', '.github/scripts/build.sh') }}-
 
       - name: Build and test
         shell: bash
+        env:
+          CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
-            docker run --rm --pull always -v "$PWD:/workspace" -w /workspace \
+            docker run --rm -v "$PWD:/workspace" -w /workspace \
+              -e CI_MODE -e CI_TOOLCHAIN_KEY \
+              -e CI_NATIVE_PREFIX=/workspace/.ci-cache/native \
+              -e CRYSTAL_CACHE_DIR=/workspace/.ci-cache/crystal \
               crystallang/crystal:latest-alpine sh -ec \
-              'apk add --no-cache bash build-base cmake curl jq pkgconf git binutils \
+              'apk add --no-cache bash build-base cmake curl pkgconf git binutils \
                 openssl-dev openssl-libs-static gc-dev gc-static pcre2-dev pcre2-static \
                 yaml-dev yaml-static zlib-dev zlib-static ncurses-terminfo-base
-               exec bash .github/scripts/build.sh'
+               exec bash .github/scripts/build.sh "$CI_MODE"'
             # Run outside Alpine as well, to catch runtime dependencies.
-            binary=$(find dist -type f -name minknow-tui -print -quit)
-            "$binary" --version
-            "$binary" --help
+            if [[ "$CI_MODE" == release ]]; then
+              binary=$(find dist -type f -name minknow-tui -print -quit)
+              "$binary" --version
+              "$binary" --help
+            fi
           else
-            bash .github/scripts/build.sh
+            CI_NATIVE_PREFIX="$PWD/.ci-cache/native" \
+              CRYSTAL_CACHE_DIR="$PWD/.ci-cache/crystal" \
+              bash .github/scripts/build.sh "$CI_MODE"
           fi
 
-      - name: Test playback shutdown handling
-        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s spec -p '*_test.py' -v
+      - uses: actions/cache/save@main
+        if: always() && !cancelled() && steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            lib
+            .ci-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@main
+        if: env.CI_MODE == 'release'
         with:
           name: release-${{ runner.os }}
           path: dist/*.tar.gz

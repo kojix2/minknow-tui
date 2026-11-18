@@ -133,7 +133,11 @@ module MinknowTui
     @config : ConnectionConfig
     @manager_channel : GRPC::Channel? = nil
 
-    def initialize(@store, @options : Options)
+    # Fake peers use shorter polling intervals without changing production timing.
+    def initialize(@store, @options : Options, @poll_interval_scale : Float64 = 1.0)
+      unless @poll_interval_scale.finite? && @poll_interval_scale > 0
+        raise ArgumentError.new("poll interval scale must be finite and positive")
+      end
       tls = !{"0", "false", "no"}.includes?((ENV["MINKNOW_TLS"]? || "true").downcase)
       @config = ConnectionConfig.new(host: @options.host, port: @options.port, tls: tls, auto_local_auth: false)
       store.endpoint = @config.authority
@@ -149,7 +153,7 @@ module MinknowTui
           rescue ex
             @store.connection = failure(ex)
             @store.changed
-            @root.pause(delay.seconds)
+            @root.pause(scaled_interval(delay.seconds))
             delay = Math.min(delay * 2, 30)
           end
         end
@@ -371,9 +375,13 @@ module MinknowTui
       spawn do
         while scope.active? && caps[key]? != "Unsupported"
           attempt(scope, caps, key) { block.call }
-          scope.pause(interval)
+          scope.pause(scaled_interval(interval))
         end
       end
+    end
+
+    private def scaled_interval(interval : Time::Span) : Time::Span
+      interval * @poll_interval_scale
     end
 
     private def watch(scope : Scope, caps : Hash(String, String), key : String, finite = false, &block : ->)
@@ -384,8 +392,8 @@ module MinknowTui
           attempt(scope, caps, key) { block.call }
           # Historical streams terminate successfully; do not request them again.
           break if finite && caps[key]? == "Available"
-          delay = 1 if Time.instant - started > 30.seconds
-          scope.pause(delay.seconds)
+          delay = 1 if Time.instant - started > scaled_interval(30.seconds)
+          scope.pause(scaled_interval(delay.seconds))
           delay = Math.min(delay * 2, 30)
         end
       end
@@ -515,10 +523,10 @@ module MinknowTui
     end
 
     private def start_reconciliation(p, scope, protocol, acquisition, device)
-      last_reconcile = Time.instant - 15.seconds
+      last_reconcile = Time.instant - scaled_interval(15.seconds)
       poll(scope, p.capabilities, "reconcile", 5.seconds) do
         # Each request has its own fresh deadline, even after hours of runtime.
-        if p.capabilities["activity"]? == "Unsupported" || Time.instant - last_reconcile >= 15.seconds
+        if p.capabilities["activity"]? == "Unsupported" || Time.instant - last_reconcile >= scaled_interval(15.seconds)
           last_reconcile = Time.instant
           raw_run = attempt(scope, p.capabilities, "current_protocol") { protocol.get_current_protocol_run(MA::Protocol::GetCurrentProtocolRunRequest.new, context) }
           if raw_run
@@ -611,7 +619,7 @@ module MinknowTui
         while scope.active? && (p.channels == 0 || p.has_flow_cell == false)
           p.capabilities["channels"] = p.has_flow_cell == false ? "No flow cell" : "Waiting for channel count"
           @store.changed
-          scope.pause(0.5.seconds)
+          scope.pause(scaled_interval(0.5.seconds))
         end
         next unless scope.active?
         request = MA::Data::GetChannelStatesRequest.new
@@ -716,7 +724,7 @@ module MinknowTui
         while scope.active? && @store.current?(generation) && @store.tab == tab
           caps.each { |key, value| p.capabilities["detail.#{key}"] = value }
           @store.changed
-          scope.pause(0.5.seconds)
+          scope.pause(scaled_interval(0.5.seconds))
         end
       end
     end

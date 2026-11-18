@@ -104,84 +104,40 @@ and 1,440 points per series. No history is saved locally.
 Core 6.x is the primary target. Older versions work where their APIs permit.
 Tests use a fake HTTP/2 server and headless UI; real hardware is not yet verified.
 
-## Live playback on Linux
-
-`tools/playback.py` runs the installed MinKNOW in a separate workspace directory,
-with hardware discovery disabled and one simulated MinION (`MS00000`). It uses
-MinKNOW's bundled Python, TLS certificates generated for this environment, and a
-dedicated CPU Dorado server. It does not require sudo. Port 9501 must be free;
-the script refuses to take over another manager.
-
-From this repository:
-
-```sh
-PY=/opt/ont/minknow/ont-python/bin/python
-"$PY" tools/playback.py start
-"$PY" tools/playback.py run --minutes 15 --basecalling
-"$PY" tools/playback.py tui
-```
-
-The default input is the existing `/srv/nanopore-data/r10_5khz.fast5` bulk FAST5,
-recorded at 5 kHz with SQK-LSK114. Defaults use FLO-MIN114 and the installed
-`dna_r10.4.1_e8.2_400bps_fast@v5.2.0` model. To use another recording, pass
-`--bulk /absolute/path/bulk.fast5` and matching `--kit`, `--product`, and, when
-basecalling, `--model`. This input is a **bulk** FAST5 recording, rather than a
-per-read FAST5 file. The original recording is opened for playback without
-copying it into the repository.
-
-Omit `--basecalling` to check signal and estimated-yield monitoring alone.
-Initialization includes temperature stabilization, calibration and a mux scan,
-which can take a few minutes. `--minutes` sets the sequencing duration; the
-recording loops during that time. Playback writes POD5, and basecalling also
-writes FASTQ. Configuration, certificates, logs and outputs remain under the
-git-ignored `.playback/` directory. Set `MINKNOW_PLAYBACK_ROOT` to choose another
-directory before running any of these commands.
-
-```sh
-"$PY" tools/playback.py status    # protocol/acquisition state and yield as JSON
-"$PY" tools/playback.py stop-run  # stop this environment's sequencing run
-"$PY" tools/playback.py stop      # stop this environment's manager
-```
-
-The manager remains running after a run finishes, so another `run` can be
-started. Stopping waits for acquisition/basecalling and retains outputs and
-logs. If shutdown times out, it reports the pending state without forcing
-process termination. `start` / `stop` manage only this
-workspace's process; the system MinKNOW service is managed separately.
-
-To check actual API data through the TUI and save all six tabs as PNG/text
-captures, run this while the simulated device is sequencing:
-
-```sh
-MINKNOW_TRUSTED_CA="$PWD/.playback/data/rpc-certs/minknow/ca.crt" \
-  crystal run tools/check_playback.cr -Dwithout_readline -- .playback/captures
-```
-
-The check waits for read statistics, yield, read lengths, temperature, bias
-voltage, live channel states and pore activity. When basecalling is enabled it
-also checks basecall counts and both Q-score graphs. Captures and
-`summary.json` are written to the destination. This validates the installed
-MinKNOW with a simulated device; physical hardware remains unverified.
-The playback option is described in ONT's
-[official start_protocol example](https://github.com/nanoporetech/minknow_api/blob/master/python/minknow_api/examples/start_protocol.py).
-
 ## CI and releases
 
-`.github/workflows/build.yml` prepares the CI environments and runs
-`.github/scripts/build.sh` to test, build and package Linux and macOS binaries.
-The script builds `libnghttp2.a` from nghttp2 1.71.0 source.
-Linux uses `crystallang/crystal:latest-alpine` for fully static linking.
-It also builds unibilium 2.1.4 to read modern terminfo files.
-Native source versions are pinned in the script; builds do not query GitHub's
-releases API.
-macOS statically links external libraries and allows only OS system libraries
-as dynamic dependencies. Linkage and CLI/demo startup are checked before packaging.
+Normal pushes to `main` and pull requests run format/lint checks and the full
+fake-API/headless test suite on Linux and macOS. They compile one test
+executable, without release optimization or archive packaging. New commits
+cancel obsolete runs for the same branch or pull request; feature-branch pushes
+are checked through their pull requests instead of creating duplicate runs.
 
-Push a tag to publish a Release after both builds pass. Assets are native
-architecture `.tar.gz` archives. Archives include the binary, README, manifests
-and toolchain information. macOS support follows the runner's SDK; Homebrew
-runtime libraries are not required. Terminal database and MinKNOW authentication
-files remain host data.
+Tag pushes run the same checks and additionally build the portable release
+archives. A manual workflow run can also request archives with the `package`
+input. Only tag pushes publish a GitHub Release. Release builds still use
+`--release`; their optimization cost is kept out of ordinary development CI.
+
+`.github/scripts/build.sh check` performs checks; `build.sh release` also builds
+and packages the application (the default for direct invocation). Each phase
+reports its elapsed time, and the test runner prints compiler and test profiles.
+
+CI caches `lib/`, native static libraries and Crystal compilation results under
+`.ci-cache/`. Cache keys include OS/architecture, the compiler image or macOS
+toolchain, `shard.lock`, the native build recipe and application/test sources.
+Native libraries use a stable path so restored caches remain usable. Changing
+source invalidates the test executable but can reuse Crystal object files.
+Completed compiler work is cached even when a test fails.
+
+The native script builds nghttp2 1.71.0 and, on Linux, unibilium 2.1.4 only when
+the corresponding cached archive/version is missing. Linux releases use
+`crystallang/crystal:latest-alpine` for static linking; the resolved image ID
+separates incompatible compiler caches. macOS releases statically link external
+libraries and allow only OS system libraries as dynamic dependencies. Linkage,
+CLI/demo startup and archive checks remain part of release packaging.
+
+CI needs neither MinKNOW nor bulk FAST5/POD5 data. Integration tests use a small
+local HTTP/2 fake server; UI tests run headlessly. Full MinKNOW playback is a
+local investigation and is not part of this repository's CI.
 
 Dependabot checks GitHub Actions weekly. Application dependencies use `shard.lock`.
 
@@ -190,8 +146,24 @@ Dependabot checks GitHub Actions weekly. Application dependencies use `shard.loc
 ```sh
 brew install crystal-ameba/ameba/ameba  # or use your package manager
 ameba src spec tools
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s spec -p '*_test.py' -v
-crystal spec
+bash spec/test_runner_spec.sh
+bash tools/test.sh --profile
 crystal tool format --check src spec tools
 crystal run tools/capture.cr -- /tmp/minknow-tui-captures
 ```
+
+`tools/test.sh` keeps the test executable in `.ci-cache/bin/spec`. It hashes
+Crystal sources, spec files, shard sources/manifests and compiler identity before reuse;
+changes trigger a rebuild. Filters and random seeds are runtime options, so
+changing only those does not recompile:
+
+```sh
+bash tools/test.sh --example "headless UI"
+bash tools/test.sh --order random
+bash tools/test.sh --rebuild --profile  # force relinking after native-library changes
+```
+
+For a model-only edit, `crystal spec spec/model_spec.cr` avoids compiling the
+API and UI dependencies. The complete CI suite still runs every spec. Fake-peer
+tests use shorter polling intervals; production polling and RPC deadlines keep
+their normal values.

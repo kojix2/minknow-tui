@@ -4,3 +4,4 @@
 *.dwarf
 /dist/
 /.playback/
+/.ci-cache/

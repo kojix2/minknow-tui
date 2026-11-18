@@ -130,7 +130,7 @@ describe "MinKNOW compatibility over local HTTP/2" do
         # Force the next reconciliation to run before the refreshed token arrives.
         peers.each(&.local_token_delay=(1.second))
         File.write(path, {"token" => "ready"}.to_json)
-        # Token refresh and reconciliation each poll every 15 seconds; allow either order.
+        # Token refresh and reconciliation can happen in either order.
         wait_for(40.seconds) { store.positions["X1"].capabilities["current_protocol"]? == "Available" }
       end
     end
