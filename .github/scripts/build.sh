@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-mode=${1:-release}
+mode=${1:-check}
 case "$mode" in check|release) ;; *) echo 'Usage: build.sh [check|release]' >&2; exit 2 ;; esac
 phase_started=$SECONDS
 timing() {
@@ -9,6 +9,7 @@ timing() {
 }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+export CRYSTAL_CACHE_DIR="$work/crystal"
 prefix="${CI_NATIVE_PREFIX:-$PWD/.ci-cache/native}"
 mkdir -p "$work/src" "$prefix/lib"
 nghttp2_version=1.71.0
@@ -31,7 +32,7 @@ if [[ ! -f "$prefix/lib/libnghttp2.a" || ! -f "$prefix/.nghttp2-version" ]] ||
 fi
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
 export CRYSTAL_LIBRARY_PATH="$prefix/lib"
-flags=(--release --no-debug -Dwithout_readline)
+flags=(--no-debug -Dwithout_readline)
 if [[ $(uname -s) == Darwin ]]; then
   platform=macos
   for dependency in openssl:libssl.a openssl:libcrypto.a bdw-gc:libgc.a \
@@ -64,23 +65,26 @@ fi
 timing 'Native libraries'
 shards install --frozen
 timing 'Shards'
-crystal tool format --check src spec tools
-if [[ "$platform" == macos ]]; then ameba src spec tools; fi
-bash spec/test_runner_spec.sh
-timing 'Format, lint and test-runner cache checks'
-bash tools/test.sh --profile
-timing 'Test compilation and execution'
 if [[ "$mode" == check ]]; then
-  echo 'Checks passed; release packaging is reserved for tags or manual builds.'
-  exit 0
+  crystal tool format --check src spec tools
+  if [[ "$platform" == macos ]]; then ameba src spec tools; fi
+  bash spec/test_runner_spec.sh
+  bash spec/build_script_spec.sh
+  timing 'Format, lint and build-script checks'
+  bash tools/test.sh --profile
+  timing 'Test compilation and execution'
+  binary="$work/minknow-tui"
+else
+  # Tag builds package the already-tested source without recompiling the specs.
+  flags+=(--release)
+  arch=$(uname -m)
+  [[ "$arch" != arm64 ]] || arch=aarch64
+  name="minknow-tui-$platform-$arch"
+  mkdir -p "dist/$name"
+  binary="dist/$name/minknow-tui"
 fi
-arch=$(uname -m)
-[[ "$arch" != arm64 ]] || arch=aarch64
-name="minknow-tui-$platform-$arch"
-mkdir -p "dist/$name"
-binary="dist/$name/minknow-tui"
-crystal build src/main.cr "${flags[@]}" -o "$binary"
-timing 'Release compilation'
+crystal build src/main.cr "${flags[@]}" --stats -o "$binary"
+timing "Application compilation ($mode)"
 if [[ "$platform" == linux ]]; then
   readelf -h "$binary" >/dev/null
   headers=$(readelf -l "$binary")
@@ -106,6 +110,11 @@ for expected in 'LIVE X1' 'Pass yield:'; do
     exit 1
   fi
 done
+if [[ "$mode" == check ]]; then
+  timing 'Linkage and startup checks'
+  echo 'Checks and non-release application build passed.'
+  exit 0
+fi
 cp README.md shard.yml shard.lock "dist/$name/"
 { crystal --version; shards --version; pkg-config --modversion libnghttp2; } > "dist/$name/BUILD-INFO.txt"
 tar -czf "dist/$name.tar.gz" -C dist "$name"

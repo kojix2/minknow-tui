@@ -45,7 +45,11 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install crystal cmake pkgconf openssl bdw-gc pcre2 libyaml unibilium crystal-ameba/ameba/ameba
+        run: brew install crystal cmake pkgconf openssl bdw-gc pcre2 libyaml unibilium
+
+      - name: Install macOS linter
+        if: runner.os == 'macOS' && env.CI_MODE == 'check'
+        run: brew install crystal-ameba/ameba/ameba
 
       - name: Identify toolchain for cache compatibility
         id: toolchain
@@ -70,21 +74,16 @@ jobs:
         with:
           path: |
             lib
-            .ci-cache
-          key: ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('shard.lock', '.github/scripts/build.sh') }}-${{ hashFiles('src/**/*.cr', 'spec/**/*.cr', 'tools/**', 'shard.yml') }}
-          restore-keys: |
-            ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('shard.lock', '.github/scripts/build.sh') }}-
+            .ci-cache/native
+          key: deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('shard.yml', 'shard.lock', '.github/scripts/build.sh') }}
 
-      - name: Build and test
+      - name: Test and build (check) or package (release)
         shell: bash
-        env:
-          CI_TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
             docker run --rm -v "$PWD:/workspace" -w /workspace \
-              -e CI_MODE -e CI_TOOLCHAIN_KEY \
+              -e CI_MODE \
               -e CI_NATIVE_PREFIX=/workspace/.ci-cache/native \
-              -e CRYSTAL_CACHE_DIR=/workspace/.ci-cache/crystal \
               crystallang/crystal:latest-alpine sh -ec \
               'apk add --no-cache bash build-base cmake curl pkgconf git binutils \
                 openssl-dev openssl-libs-static gc-dev gc-static pcre2-dev pcre2-static \
@@ -98,16 +97,15 @@ jobs:
             fi
           else
             CI_NATIVE_PREFIX="$PWD/.ci-cache/native" \
-              CRYSTAL_CACHE_DIR="$PWD/.ci-cache/crystal" \
               bash .github/scripts/build.sh "$CI_MODE"
           fi
 
       - uses: actions/cache/save@main
-        if: always() && !cancelled() && steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
+        if: success() && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             lib
-            .ci-cache
+            .ci-cache/native
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - uses: actions/upload-artifact@main

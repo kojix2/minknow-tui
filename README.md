@@ -134,31 +134,34 @@ Tests use a fake HTTP/2 server and headless UI; real hardware is not yet verifie
 
 Normal pushes to `main` and pull requests run format/lint checks and the full
 fake-API/headless test suite on Linux and macOS. They compile one test
-executable, without release optimization or archive packaging. New commits
-cancel obsolete runs for the same branch or pull request; feature-branch pushes
+executable and build the application without `--release` or archive packaging.
+New commits cancel obsolete runs for the same branch or pull request; feature-branch pushes
 are checked through their pull requests instead of creating duplicate runs.
 
-Tag pushes run the same checks and additionally build the portable release
-archives. A manual workflow run can also request archives with the `package`
-input. Only tag pushes publish a GitHub Release. Release builds still use
-`--release`; their optimization cost is kept out of ordinary development CI.
+Tag pushes compile the application with `--release` and package portable
+release archives, without recompiling or rerunning the test suite or lint checks.
+Tags are intended for commits already checked by ordinary CI. A manual workflow
+run with `package` enabled follows the same release path. Only tag pushes publish
+a GitHub Release. Both modes check application startup and linkage.
 
-`.github/scripts/build.sh check` performs checks; `build.sh release` also builds
-and packages the application (the default for direct invocation). Each phase
-reports its elapsed time, and the test runner prints compiler and test profiles.
+`.github/scripts/build.sh check` performs checks and a non-release application
+build (the default for direct invocation). `build.sh release` builds and packages
+only the release application. Each phase reports its elapsed time, and the test
+runner prints compiler and test profiles.
 
-CI caches `lib/`, native static libraries and Crystal compilation results under
-`.ci-cache/`. Cache keys include OS/architecture, the compiler image or macOS
-toolchain, `shard.lock`, the native build recipe and application/test sources.
-Native libraries use a stable path so restored caches remain usable. Changing
-source invalidates the test executable but can reuse Crystal object files.
-Completed compiler work is cached even when a test fails.
+CI caches only dependency sources in `lib/` and native C libraries in
+`.ci-cache/native/`. The exact cache key includes OS/architecture, the compiler
+image or macOS toolchain, `shard.yml`, `shard.lock` and the native build script.
+There is no fallback to older keys, and caches are saved only after successful
+builds. Crystal compiler output and test executables are never saved to the
+CI cache. Tests and application builds use temporary compiler directories that
+are deleted on exit. The previous combined compiler/test caches are not restored.
 
 The native script builds nghttp2 1.71.0 and, on Linux, unibilium 2.1.4 only when
 the corresponding cached archive/version is missing. Linux releases use
 `crystallang/crystal:latest-alpine` for static linking; the resolved image ID
-separates incompatible compiler caches. macOS releases statically link external
-libraries and allow only OS system libraries as dynamic dependencies. Linkage,
+separates incompatible native-library caches. macOS releases statically link
+external libraries and allow only OS system libraries as dynamic dependencies. Linkage,
 CLI/demo startup and archive checks remain part of release packaging.
 
 CI needs neither MinKNOW nor bulk FAST5/POD5 data. Integration tests use a small
@@ -173,23 +176,23 @@ Dependabot checks GitHub Actions weekly. Application dependencies use `shard.loc
 brew install crystal-ameba/ameba/ameba  # or use your package manager
 ameba src spec tools
 bash spec/test_runner_spec.sh
+bash spec/build_script_spec.sh
 bash tools/test.sh --profile
 crystal tool format --check src spec tools
 crystal run tools/capture.cr -- /tmp/minknow-tui-captures
 ```
 
-`tools/test.sh` keeps the test executable in `.ci-cache/bin/spec`. It hashes
-Crystal sources, spec files, shard sources/manifests and compiler identity before reuse;
-changes trigger a rebuild. Filters and random seeds are runtime options, so
-changing only those does not recompile:
+`tools/test.sh` runs `crystal spec` without release optimization and with a fresh,
+temporary compiler cache on every invocation. Runtime options are forwarded to
+the spec runner. Only the final distribution binary is compiled with `--release`:
 
 ```sh
 bash tools/test.sh --example "headless UI"
 bash tools/test.sh --order random
-bash tools/test.sh --rebuild --profile  # force relinking after native-library changes
+bash tools/test.sh --profile
 ```
 
 For a model-only edit, `crystal spec spec/model_spec.cr` avoids compiling the
-API and UI dependencies. The complete CI suite still runs every spec. Fake-peer
-tests use shorter polling intervals; production polling and RPC deadlines keep
+API and UI dependencies. Ordinary CI runs every spec. Fake-peer tests use
+shorter polling intervals; production polling and RPC deadlines keep
 their normal values.
