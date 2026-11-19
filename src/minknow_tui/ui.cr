@@ -17,12 +17,32 @@ module MinknowTui
     end
 
     getter! list : CW::List
+    getter preview : CW::ScrollableText? = nil
 
-    def initialize(window : CT::Window, title : String, items : Array(String), initial = 0, &selected : Int32 ->)
-      super(parent: window, width: "90%", height: "75%", parse_tags: false)
+    def initialize(window : CT::Window, title : String, items : Array(String), initial = 0, previews : Array(String)? = nil, &selected : Int32 ->)
+      super(parent: window, width: "90%", height: "75%", keys: true, parse_tags: false, layout: CT::Layout::Dock.new)
       self.label = title
-      @list = ChoiceList.new(parent: self, width: "100%", height: "100%", items: items, keys: true, vi_keys: true, parse_tags: false)
+      if previews
+        preview = CW::ScrollableText.new(parent: self, height: Math.min(12, window.aheight // 3), layout_hint: :bottom,
+          keys: true, vi_keys: true, parse_tags: false, content: previews[initial]? || "")
+        @preview = preview
+        CW::Box.new(parent: self, height: 1, layout_hint: :bottom, parse_tags: false,
+          content: "─ Run details · Tab to scroll ─", style: CT::Style.new(fg: Theme::MUTED))
+      end
+      @list = ChoiceList.new(parent: self, width: "100%", height: "100%", layout_hint: :center, items: items, keys: true, vi_keys: true, parse_tags: false)
       list.current_index = initial unless items.empty?
+      if previews && preview
+        list.on(CT::Event::ItemSelected) do |event|
+          preview.content = previews[event.index]? || ""
+          preview.scroll_to(0)
+        end
+        on(CT::Event::KeyPress) do |event|
+          if event.key == Tput::Key::Tab || event.key == Tput::Key::ShiftTab
+            window.focused == list ? preview.focus : list.focus
+            event.accept
+          end
+        end
+      end
       list.on(CT::Event::ItemActivated) do |event|
         selected.call(event.index)
         accept
@@ -32,6 +52,10 @@ module MinknowTui
     def open : Nil
       super
       list.focus
+    end
+
+    protected def dialog_enter_gesture : Nil
+      list.activate_current
     end
   end
 
@@ -117,6 +141,7 @@ module MinknowTui
     @last_chart_signature = ""
     @last_activity_signature : UInt64? = nil
     @last_view : Tuple(UInt64, Int32)?
+    @position_row_count : Int32? = nil
 
     def initialize(@store : Store, window : CT::Window? = nil)
       @window = window || CT::Window.new(title: "minknow-tui", default_quit_keys: false,
@@ -136,7 +161,7 @@ module MinknowTui
       @runs_view.label = "Runs — API history"
       @sidebar.add_widget @positions_view
       @sidebar.add_widget @runs_view
-      @sidebar.sizes = [16, 12]
+      @sidebar.set_stretch_factor(1, 1)
       @tabs = CW::TabWidget.new(width: "100%", height: "100%", parse_tags: false)
       @overview = CW::ScrollableText.new(keys: true, vi_keys: true, parse_tags: false)
       @tabs.add_tab "Overview", @overview
@@ -288,7 +313,7 @@ module MinknowTui
     private def footer : String
       case @dialog
       when SignalDialog    then return " Esc back to Pores"
-      when Picker          then return " ↑↓ choose  Enter select  Esc cancel"
+      when Picker          then return " ↑↓ choose  Enter select  #{@dialog.as(Picker).preview ? "Tab details  " : ""}Esc cancel"
       when TextDialog      then return " ↑↓ scroll  Esc close"
       when CW::InputDialog then return " Enter apply  Esc cancel"
       end
@@ -336,25 +361,59 @@ module MinknowTui
     private def update_lists
       values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
       @position_keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
-      rows = [["Position", "State"], ["Host", "Overview"]] + values.map { |position| [MinknowTui.text(position.name), position.status] }
+      width = Math.max(8, @positions_view.awidth - 3)
+      state_width = Math.min(25, values.max_of? { |position| display_width(position.status) } || 8)
+      device_width = Math.min(13, Math.max(1, width - state_width - 10))
+      position_width = Math.max(1, width - state_width - device_width - 4)
+      rows = [["Position", "Device", "State"], ["Host", "—", "Overview"]] + values.map do |position|
+        [fit_cell(position.name, position_width), fit_cell(device_label(position), device_width), fit_cell(position.status, state_width)]
+      end
       @positions_view.rows = rows unless @positions_view.rows == rows
+      if @position_row_count != rows.size
+        # Fit a few devices and give the remaining height to run history.
+        # Only reset on row-count changes, so manual divider moves persist.
+        # The stylesheet's two border rows may not be resolved before first paint.
+        @sidebar.sizes = [Math.min(8, rows.size + 2), 1]
+        @position_row_count = rows.size
+      end
       @positions_view.current_index = (@position_keys.index(@store.position_id) || 0) + 1
       runs = matching_runs
-      @run_keys = runs.map(&.id)
-      # Reserve the state column before fitting names. API state strings (for
-      # example Finished With Error) otherwise push it outside the sidebar.
-      width = Math.max(8, @runs_view.awidth - @runs_view.ihorizontal - 1)
+      @run_keys = runs.flat_map { |run| [run.id, run.id, run.id] }
+      width = Math.max(8, @runs_view.awidth - 4)
       state_width = Math.min(Math.max(5, runs.max_of? { |run| display_width(run.state) } || 5), Math.max(5, width - 6))
-      name_width = Math.max(1, width - state_width - 2)
-      dates = runs.map { |run| run.started_at.try(&.to_local.to_s("%Y-%m-%d")) }.uniq!
-      shared_date = dates.first? if dates.size == 1
-      rows = [["State", fit_cell("Run / sample", name_width)]] + runs.map do |run|
-        label = "#{run.start_label(show_date: shared_date.nil?)} #{run.label}"
-        [fit_cell(run.state, state_width), fit_cell(label, name_width)]
+      name_width = Math.max(1, width - state_width - 3)
+      rows = [["Run / sample · state"]] + runs.flat_map do |run|
+        title = "#{fit_cell(run.label, name_width)} · #{fit_cell(run.state, state_width)}"
+        timing = "#{run.start_label} · #{history_elapsed(run)} · #{run.acquisitions.size} acq"
+        settings = [run.experiment, run.kit].reject(&.empty?).join(" · ")
+        [[title], [fit_cell("  #{timing}", width)], [fit_cell("  #{settings.empty? ? "—" : settings}", width)]]
       end
       @runs_view.rows = rows unless @runs_view.rows == rows
+      @runs_view.non_selectable_rows = (0...rows.size).reject { |i| i % 3 == 1 }
       @runs_view.current_index = (@run_keys.index(@store.run_id) || 0) + 1 unless runs.empty?
-      @runs_view.label = "Runs: #{MinknowTui.text(@store.position_id || "Host")}#{shared_date ? " · #{shared_date}" : ""}"
+      @runs_view.label = "Runs: #{MinknowTui.text(@store.position_id || "Host")} · r details"
+    end
+
+    private def device_label(position : Position) : String
+      type = position.device_type
+      case type.downcase.gsub('_', ' ')
+      when "minion"                                   then "MinION"
+      when "gridion"                                  then "GridION"
+      when "promethion"                               then "PromethION"
+      when "p2 solo", "promethion 2 solo"             then "P2 Solo"
+      when "p2 integrated", "promethion 2 integrated" then "P2"
+      when "minion mk1c"                              then "Mk1C"
+      when "minion mk1d"                              then "Mk1D"
+      else                                                 present(type)
+      end
+    end
+
+    private def history_elapsed(run : Run) : String
+      position = @store.position
+      now = if position && run.id == position.current_run
+              position.connected? ? Time.utc : position.updated_at
+            end
+      run.elapsed(now)
     end
 
     private def display_width(value : String) : Int32
@@ -416,9 +475,13 @@ module MinknowTui
         if run = @store.run
           io << "  " << run.state
           io << " / " << run.phase unless run.phase == "Unknown"
-          io << "    Experiment: " << run.experiment unless run.experiment.empty?
+          io << "\n  Sample: " << present(run.sample) << "    Experiment: " << present(run.experiment)
+          io << "\n  Started: " << (run.started_at.try(&.to_local.to_s("%Y-%m-%d %H:%M:%S %Z")) || "—")
+          if ended_at = run.ended_at
+            io << "\n  Ended: " << ended_at.to_local.to_s("%Y-%m-%d %H:%M:%S %Z")
+          end
           io << "\n  " << run_timing(run, position, metrics)
-          io << "\n\n  Acquired reads: " << MinknowTui.number(metrics.reads)
+          io << "\n  Acquired reads: " << MinknowTui.number(metrics.reads)
           io << "\n  Estimated yield: " << MinknowTui.number(metrics.estimated_bases, "b")
           if metrics.basecalling_enabled == false
             io << "\n  Basecalling disabled"
@@ -427,12 +490,16 @@ module MinknowTui
             io << "\n  N50 basecalled: " << MinknowTui.number(metrics.n50, "b")
           end
           io << "\n  N50 estimated: " << MinknowTui.number(metrics.estimated_n50, "b")
-          io << "\n\n  " << temperature_text(position, metrics) if metrics.temperature || position.live.temperature
+          io << "\n  Pore occupancy: " << percentage(metrics.occupancy)
+          io << "\n  " << temperature_text(position, metrics)
+          io << "\n\n  Kit: " << present(run.kit)
+          io << "\n  Basecall model: " << present(metrics.basecall_model)
           issue = capability(position, "summary", received: !metrics.updated_at.nil?)
           io << "\n  " << issue unless issue.empty?
         else
           io << "  No run available."
         end
+        io << "\n  Current flow cell: " << present(position.flow_cell) << "  " << position.product
         io << "\n  Position API: " << position_api(position) unless position.connected?
         io << "\n  " << position.error unless position.error.empty?
       end
@@ -659,7 +726,7 @@ module MinknowTui
     def pick_position
       values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
       keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
-      labels = ["Host overview"] + values.map { |position| "#{MinknowTui.text(position.name)}  #{position.status}" }
+      labels = ["Host overview"] + values.map { |position| "#{MinknowTui.text(position.name)}  #{device_label(position)}  #{position.status}" }
       picker = Picker.new(@window, "Positions", labels, keys.index(@store.position_id) || 0) do |i|
         id = keys[i]
         @store.select_position(id) if id.nil? || @store.positions.has_key?(id)
@@ -674,14 +741,16 @@ module MinknowTui
       values = matching_runs.reject { |run| run.id == position.current_run }
       current = position.runs[position.current_run]?
       labels = [current ? "Follow current run  ·  #{current.start_label}  #{current.label}" : "Follow current run  ·  waiting for next run"]
+      previews = [current ? history_details(current) : "Follow the next run when it starts."]
       names = values.map { |run| "#{run.start_label}  #{run.label}  #{run.state}" }
       counts = names.tally
       values.each_with_index do |run, i|
         row = names[i]
         row += "  #{run.id}" if counts[row] > 1
         labels << "#{run.id == @store.run_id ? "› " : "  "}#{row}"
+        previews << history_details(run)
       end
-      picker = Picker.new(@window, "Runs — #{position.name}", labels) do |i|
+      picker = Picker.new(@window, "Runs — #{position.name}", labels, previews: previews) do |i|
         next unless position == @store.position
         if i == 0
           @store.follow_current_run
@@ -691,6 +760,15 @@ module MinknowTui
         show_tab(0) if @store.tab == 4
       end
       track picker
+    end
+
+    private def history_details(run : Run) : String
+      String.build do |io|
+        io << "State: " << run.state << " / " << run.phase << "    Duration: " << history_elapsed(run)
+        run_details(io, run)
+        io << "Ended: " << (run.ended_at.try(&.to_local.to_s) || "—")
+        io << "\nAcquisitions: " << run.acquisitions.size
+      end
     end
 
     def pick_acquisition

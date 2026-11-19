@@ -46,6 +46,19 @@ bin/minknow-tui --host localhost --port 9501
 
 Below 100 columns or 30 rows, use selection dialogs instead of the sidebar.
 The minimum supported size is 80×24. Pane dividers can be resized.
+Positions uses only the rows needed for a few devices, up to eight lines by
+default; the rest of the sidebar is available for run history. Larger position
+lists scroll. Manual divider adjustments are kept until the position count changes.
+The Device column uses short model names such as `P2 Solo` and `Mk1C`.
+
+Each Runs entry shows the sample and state, start time, duration, acquisition
+count, experiment and kit. Press `r` to browse history with a details preview;
+`Tab` switches between the list and scrollable details. Enter selects a run,
+while Esc closes the browser without changing the selection.
+
+Overview shows the selected run's sample, timestamps, statistics, kit, basecall
+model and current flow cell. Full IDs, protocol, alignment settings and output
+paths remain available with `i`.
 
 The header identifies the position, run start time and sample for the statistics
 on screen. `HISTORY` includes earlier acquisitions within a running protocol.

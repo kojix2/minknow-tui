@@ -21,6 +21,140 @@ private def with_ui(width, height, iterm2 = false, &)
 end
 
 describe "minknow-tui headless UI" do
+  it "fits Positions to a few devices and gives the remaining sidebar to run history" do
+    with_ui(120, 36) do |store, _, interface, window|
+      positions = interface.positions_view
+      window.dump(positions.aleft, positions.aleft + positions.awidth, positions.atop, positions.atop + positions.aheight).to_s.should contain("X4")
+      store.positions.reject! { |name, _| name != "X1" }
+      interface.refresh
+      window.repaint
+      interface.positions_view.aheight.should eq(5)
+      interface.runs_view.aheight.should be > interface.positions_view.aheight
+      window.dump.to_s.should contain("X1")
+      sidebar = interface.positions_view.parent.as(Crysterm::Widget::Splitter)
+      sidebar.dividers.first.position = 7
+      interface.refresh
+      window.repaint
+      interface.positions_view.aheight.should eq(7)
+      window.unpin_width
+      window.unpin_height
+      window.emit(Crysterm::Event::DeviceResize, Crysterm::Size.new(140, 44))
+      interface.refresh
+      window.repaint
+      interface.positions_view.aheight.should eq(7)
+      20.times do |i|
+        name = "extra-#{i}"
+        store.positions[name] = MinknowTui::Position.new(name)
+      end
+      interface.refresh
+      window.repaint
+      interface.positions_view.aheight.should eq(8)
+      interface.positions_view.focus
+      window.press(Tput::Key::End)
+      store.position_id.should eq("extra-9")
+    end
+  end
+
+  [{120, 36}, {80, 24}].each do |size|
+    it "keeps the overview concise and exposes full settings in Details at #{size}" do
+      with_ui(size[0], size[1]) do |store, _, interface, window|
+        run = store.run || fail "Expected a demo run"
+        acquisition = store.acquisition_id || fail "Expected a demo acquisition"
+        store.detail.barcoding_kits = "EXP-NBD114"
+        store.detail.basecall_model = "dna_r10.4.1_e8.2_400bps_sup"
+        store.detail.alignment_reference = "/data/reference.fa"
+        store.detail.alignment_bed = "/data/targets.bed"
+        interface.refresh
+        window.repaint
+        visible = window.dump.to_s
+        visible.should contain("Sample: sample-A")
+        visible.should contain("Started:")
+        visible.should contain("Pass yield:")
+        content = interface.overview.content
+        [run.kit, "dna_r10.4.1_e8.2_400bps_sup", "Current flow cell: ABC12340", "Pore occupancy:"].each do |value|
+          content.should contain(value)
+        end
+        content.should_not contain(run.id)
+        content.should_not contain("Alignment BED:")
+        interface.overview.focus
+        window.press(Tput::Key::End)
+        window.repaint
+        window.dump.to_s.should contain("Current flow cell: ABC12340")
+        window.press('i')
+        details = interface.dialog.as(MinknowTui::TextDialog).body.content
+        [run.id, run.protocol, run.output, acquisition, "EXP-NBD114", "/data/reference.fa", "/data/targets.bed"].each do |value|
+          details.should contain(value)
+        end
+      end
+    end
+  end
+
+  it "shows device types and short model names in Positions and its picker" do
+    with_ui(120, 36) do |store, _, interface, window|
+      {"Minion" => "MinION", "Promethion 2 Solo" => "P2 Solo", "P2 Solo" => "P2 Solo",
+       "Minion Mk1c" => "Mk1C", "Gridion" => "GridION"}.each do |type, label|
+        store.positions["X1"].device_type = type
+        interface.refresh
+        window.repaint
+        view = interface.positions_view
+        text = window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s
+        text.should contain(label)
+        text.should contain("Sequencing")
+        text.should contain("Hardware Error")
+        window.press('p')
+        interface.dialog.as(MinknowTui::Picker).list.items.join.should contain("X1  #{label}")
+        window.press(Tput::Key::Escape)
+      end
+    end
+  end
+
+  [{120, 36}, {80, 24}].each do |size|
+    it "previews run history without changing selection until Enter at #{size}" do
+      with_ui(size[0], size[1]) do |store, _, interface, window|
+        position = store.positions["X1"]
+        live, old, older = position.history
+        old.output = "/data/" + "sequencing-output/" * 24 + old.sample
+        old.started_at = Time.local(2026, 11, 18, 21, 8)
+        old.ended_at = old.started_at.try { |start| start + 10.minutes }
+        unless interface.compact?
+          interface.refresh
+          window.repaint
+          view = interface.runs_view
+          text = window.dump(view.aleft, view.aleft + view.awidth, view.atop, view.atop + view.aheight).to_s
+          ["Completed", "11/18 21:08", "00:10:00", "experiment-01", "SQK-LSK114", "2 acq"].each { |value| text.should contain(value) }
+          interface.runs_view.focus
+          window.press(Tput::Key::Down)
+          store.run_id.should eq(old.id)
+          window.press(Tput::Key::Down)
+          store.run_id.should eq(older.id)
+          window.press(Tput::Key::Up)
+          store.run_id.should eq(old.id)
+          store.follow_current_run
+          interface.refresh
+        end
+        window.press('r')
+        picker = interface.dialog.as(MinknowTui::Picker)
+        window.repaint
+        window.press(Tput::Key::Down)
+        preview = picker.preview || fail "Expected a history preview"
+        [old.id, old.output, old.kit, old.experiment, "00:10:00", "Acquisitions: 2"].each { |value| preview.content.should contain(value) }
+        store.run_id.should eq(live.id)
+        window.press(Tput::Key::Tab)
+        window.focused.should eq(preview)
+        window.press(Tput::Key::End)
+        preview.child_base.should be > 0
+        window.press(Tput::Key::Escape)
+        store.run_id.should eq(live.id)
+        window.press('r')
+        window.repaint
+        window.press(Tput::Key::Down)
+        window.press(Tput::Key::Tab)
+        window.press(Tput::Key::Enter)
+        store.run_id.should eq(old.id)
+      end
+    end
+  end
+
   it "opens the selected live pore trace and restores the pore grid on Escape" do
     with_ui(80, 24) do |store, demo, interface, window|
       window.press('5')
@@ -208,8 +342,8 @@ describe "minknow-tui headless UI" do
         unless interface.compact?
           sidebar = interface.runs_view
           text = window.dump(sidebar.aleft, sidebar.aleft + sidebar.awidth, sidebar.atop, sidebar.atop + sidebar.aheight).to_s
-          text.should contain("2026-11-18")
-          text.should contain("21:08 tui-play")
+          text.should contain("11/18 21:08")
+          text.should contain("tui-playback")
         end
         window.press('r')
         window.press(Tput::Key::Down)
