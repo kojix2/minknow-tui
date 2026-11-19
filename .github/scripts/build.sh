@@ -98,7 +98,14 @@ fi
 "$binary" --version
 "$binary" --help
 CRYSTERM_DUMP="$work/demo.dump" TERM=xterm-256color "$binary" --demo
-grep -q minknow-tui "$work/demo.dump"
+# The selected-run header shows run context rather than the application title.
+for expected in 'LIVE X1' 'Pass yield:'; do
+  if ! grep -Fq "$expected" "$work/demo.dump"; then
+    echo "Demo startup check failed: missing '$expected'" >&2
+    cat "$work/demo.dump" >&2
+    exit 1
+  fi
+done
 cp README.md shard.yml shard.lock "dist/$name/"
 { crystal --version; shards --version; pkg-config --modversion libnghttp2; } > "dist/$name/BUILD-INFO.txt"
 tar -czf "dist/$name.tar.gz" -C dist "$name"
