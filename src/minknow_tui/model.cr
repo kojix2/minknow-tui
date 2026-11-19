@@ -59,7 +59,7 @@ module MinknowTui
     end
   end
 
-  record StateStyle, label : String, description : String, colour : String, group : String, order : UInt32, group_colour : String = "" do
+  record StateStyle, label : String, colour : String, group : String, order : UInt32, group_colour : String = "" do
     def terminal_colour : String?
       self.class.normalize_colour(colour)
     end
@@ -167,16 +167,16 @@ module MinknowTui
       first = adjusted.index { |bin| bin.count > 0 }
       last = adjusted.rindex { |bin| bin.count > 0 }
       return [] of HistogramBin unless first && last
-      source = adjusted[first..last]
-      width = Math.max(1, (source.size + capacity - 1) // Math.max(1, capacity))
-      source.each_slice(width).map do |group|
-        HistogramBin.new(group.first.lower, group.last.upper, group.sum(&.count))
-      end.to_a
+      aggregate_histogram(adjusted[first..last], capacity)
     end
 
     def qscore_bars(capacity : Int32) : Array(HistogramBin)
-      width = Math.max(1, (qscore_histogram.size + capacity - 1) // Math.max(1, capacity))
-      qscore_histogram.each_slice(width).map do |group|
+      aggregate_histogram(qscore_histogram, capacity)
+    end
+
+    private def aggregate_histogram(bins : Array(HistogramBin), capacity : Int32) : Array(HistogramBin)
+      width = Math.max(1, (bins.size + capacity - 1) // Math.max(1, capacity))
+      bins.each_slice(width).map do |group|
         HistogramBin.new(group.first.lower, group.last.upper, group.sum(&.count))
       end.to_a
     end
@@ -202,8 +202,8 @@ module MinknowTui
       sample.empty? ? id : sample
     end
 
-    def start_label(show_date = true) : String
-      started_at.try(&.to_local.to_s(show_date ? "%m/%d %H:%M" : "%H:%M")) || "Time unknown"
+    def start_label : String
+      started_at.try(&.to_local.to_s("%m/%d %H:%M")) || "Time unknown"
     end
 
     def elapsed(live_at : Time? = Time.utc) : String
@@ -309,7 +309,6 @@ module MinknowTui
     property host_description = ""
     property connection = "Connecting"
     property disk = "Not available"
-    property disk_updated_at : Time? = nil
     getter positions = {} of String => Position
     getter capabilities = {} of String => String
     getter events = [] of Event
@@ -323,7 +322,6 @@ module MinknowTui
     property filter = ""
     property detail = Metrics.new
     property generation = 0_u64
-    property revision = 0_u64
     getter trace : SignalTrace?
 
     def open_trace(channel : Int32) : SignalTrace?
@@ -345,10 +343,6 @@ module MinknowTui
       close_trace unless p && p == trace.position && p.trace_available? && p.current_acquisition == trace.acquisition && trace.channel <= p.channels
     end
 
-    def changed
-      @revision &+= 1
-    end
-
     def position : Position?
       positions[position_id]?
     end
@@ -362,7 +356,6 @@ module MinknowTui
       close_trace
       @tab = value
       clear_detail_capabilities
-      changed
     end
 
     private def clear_detail_capabilities
@@ -420,7 +413,6 @@ module MinknowTui
         sync_acquisition(p)
       end
       reset_detail if old != {run_id, acquisition_id}
-      changed
     end
 
     private def sync_acquisition(p : Position)
@@ -439,7 +431,6 @@ module MinknowTui
       @detail = Metrics.new
       @generation &+= 1
       clear_detail_capabilities
-      changed
     end
 
     def current?(generation : UInt64) : Bool
@@ -454,7 +445,6 @@ module MinknowTui
       while @events.size > 2000
         @event_keys.delete(@events.shift.key)
       end
-      changed
     end
 
     def visible_events : Array(Event)

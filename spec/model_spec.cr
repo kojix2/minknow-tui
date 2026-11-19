@@ -27,6 +27,20 @@ describe MinknowTui::Series do
 end
 
 describe MinknowTui::Metrics do
+  it "groups read-length and Q-score bins without losing counts or range boundaries" do
+    metrics = MinknowTui::Metrics.new
+    metrics.qscore_bars(2).should be_empty
+    bins = (0...5).map { |i| MinknowTui::HistogramBin.new(i.to_f64, (i + 1).to_f64, (i + 1).to_f64) }
+    metrics.histogram = metrics.qscore_histogram = bins
+    [metrics.histogram_bars(2, full_range: true), metrics.qscore_bars(2)].each do |bars|
+      bars.size.should eq(2)
+      bars.map(&.count).should eq([6.0, 9.0])
+      bars.first.lower.should eq(0.0)
+      bars.last.upper.should eq(5.0)
+    end
+    metrics.qscore_bars(1).first.count.should eq(15.0)
+  end
+
   it "trims one percent from each end for display without changing N50" do
     metrics = MinknowTui::Metrics.new
     metrics.n50 = 12000.0
@@ -49,8 +63,8 @@ describe MinknowTui::Metrics do
 
   it "replaces overlapping duty buckets and groups history at five minutes after 48 minutes" do
     metrics = MinknowTui::Metrics.new
-    metrics.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "", "#52d687", "Sequencing", 1_u32)
-    metrics.state_styles["adapter"] = MinknowTui::StateStyle.new("Adapter", "", "#52d687", "Sequencing", 2_u32)
+    metrics.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "#52d687", "Sequencing", 1_u32)
+    metrics.state_styles["adapter"] = MinknowTui::StateStyle.new("Adapter", "#52d687", "Sequencing", 2_u32)
     metrics.put_duty(MinknowTui::DutyBucket.new(0, 60, {"strand" => 3.0, "adapter" => 1.0}))
     metrics.put_duty(MinknowTui::DutyBucket.new(0, 60, {"strand" => 2.0, "adapter" => 2.0}))
     metrics.activity_buckets.first.states["Sequencing"].should eq(100.0)
@@ -63,7 +77,7 @@ describe MinknowTui::Metrics do
   end
 
   it "normalizes API state and group colors for terminal rendering" do
-    style = MinknowTui::StateStyle.new("", "", "12AbEF", "", 0_u32, "#112233")
+    style = MinknowTui::StateStyle.new("", "12AbEF", "", 0_u32, "#112233")
     style.terminal_colour.should eq("#12AbEF")
     style.group_terminal_colour.should eq("#112233")
     MinknowTui::StateStyle.normalize_colour("bad{tag}").should be_nil

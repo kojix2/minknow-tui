@@ -414,7 +414,7 @@ describe "minknow-tui headless UI" do
         ]
         samples.each_with_index do |(name, _, colour, _, _), index|
           position.update_channel(index + 1, MinknowTui::ChannelState.new(name))
-          position.state_styles[name] = MinknowTui::StateStyle.new(name, "", colour, "", 0_u32)
+          position.state_styles[name] = MinknowTui::StateStyle.new(name, colour, "", 0_u32)
         end
         window.press('5')
         interface.refresh
@@ -438,7 +438,7 @@ describe "minknow-tui headless UI" do
         (Crysterm::Attr.flags(row[grid.aleft + 6].attr) & Crysterm::Attr::UNDERLINE).should_not eq(0)
 
         # Metadata can arrive after channel states; both grid and legend must repaint.
-        position.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "", "ffffff", "", 0_u32)
+        position.state_styles["strand"] = MinknowTui::StateStyle.new("Sequencing", "ffffff", "", 0_u32)
         interface.refresh
         window.repaint
         cell = window.cell_rows[grid.atop][grid.aleft + 5]

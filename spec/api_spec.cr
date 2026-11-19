@@ -68,6 +68,22 @@ describe MinknowTui::ConnectionConfig do
 end
 
 describe MinknowTui::Decode do
+  it "formats Manager and Instance disk responses identically and preserves low-space alerts" do
+    {MinknowApi::Manager::FilesystemDiskSpaceInfo, MinknowApi::Instance::FilesystemDiskSpaceInfo}.each do |type|
+      disk = type.new
+      disk.filesystem_id = "data\e[31m"
+      disk.bytes_available = 1000_u64
+      disk.bytes_capacity = 2000_u64
+      disk.recommend_alert = true
+      other = type.new
+      other.filesystem_id = "archive"
+      other.bytes_available = 2000_u64
+      other.bytes_capacity = 4000_u64
+      MinknowTui::Decode.disk_space([disk, other]).should eq("data[31m: 1.00 kB free / 2.00 kB [LOW SPACE]\narchive: 2.00 kB free / 4.00 kB")
+    end
+    MinknowTui::Decode.disk_space([] of MinknowApi::Manager::FilesystemDiskSpaceInfo).should be_empty
+  end
+
   it "falls back to the protocol kit tag and preserves an explicit user kit" do
     raw = MinknowApi::Protocol::ProtocolRunInfo.new
     raw.meta_info = MinknowApi::Protocol::ProtocolInfo.new.tap do |info|

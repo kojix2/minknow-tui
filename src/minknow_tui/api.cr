@@ -85,7 +85,7 @@ module MinknowTui
           style = state.style
           group_name = group.name.empty? ? state.name : group.name
           result[state.name] = StateStyle.new(MinknowTui.text(style.try(&.label) || state.name).gsub(/[{}]/, ""),
-            MinknowTui.text(style.try(&.description) || ""), style.try(&.colour) || "",
+            style.try(&.colour) || "",
             MinknowTui.text(group_name).gsub(/[{}]/, ""), state.global_order, group.style.try(&.colour) || "")
         end
       end
@@ -95,6 +95,12 @@ module MinknowTui
     def n50(m : Metrics, called : Number, estimated : Number)
       m.n50 = called > 0 && m.basecalling_enabled != false ? called.to_f64 : nil
       m.estimated_n50 = estimated > 0 ? estimated.to_f64 : nil
+    end
+
+    def disk_space(disks) : String
+      disks.map do |disk|
+        "#{MinknowTui.text(disk.filesystem_id)}: #{MinknowTui.number(disk.bytes_available, "B")} free / #{MinknowTui.number(disk.bytes_capacity, "B")}#{disk.recommend_alert ? " [LOW SPACE]" : ""}"
+      end.join("\n")
     end
 
     def temperature(value : MinknowApi::Device::GetTemperatureResponse) : Tuple(String, Float64)?
@@ -152,8 +158,7 @@ module MinknowTui
             connect
             break
           rescue ex
-            @store.connection = failure(ex)
-            @store.changed
+            @store.connection = self.class.failure(ex)
             @root.pause(scaled_interval(delay.seconds))
             delay = Math.min(delay * 2, 30)
           end
@@ -219,7 +224,7 @@ module MinknowTui
         version = client.get_version_info(MA::Manager::GetVersionInfoRequest.new, context)
       rescue ex
         ch.close
-        if !@options.explicit_port? && @config.port == 9501 && !@config.client_certificate_configured? && refused?(ex)
+        if !@options.explicit_port? && @config.port == 9501 && !@config.client_certificate_configured? && self.class.refused?(ex)
           @config = @config.with_port(9502)
           @store.endpoint = @config.authority
           @store.event("TUI", "INFO", "Manager port 9501 refused the connection; trying TLS port 9502")
@@ -251,14 +256,12 @@ module MinknowTui
         client.get_version_info(MA::Manager::GetVersionInfoRequest.new, context)
         if @root.active?
           @store.connection = "Connected"
-          @store.changed
         end
       end
       poll(@root, @store.capabilities, "manager_disk", 15.seconds) do
         value = client.get_disk_space_info(MA::Manager::GetDiskSpaceInfoRequest.new, context)
         if @root.active?
-          @store.disk = value.filesystem_disk_space_info.map { |disk| "#{MinknowTui.text(disk.filesystem_id)}: #{MinknowTui.number(disk.bytes_available, "B")} free / #{MinknowTui.number(disk.bytes_capacity, "B")}#{disk.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
-          @store.disk_updated_at = Time.utc
+          @store.disk = Decode.disk_space(value.filesystem_disk_space_info)
         end
       end
       notifications = MA::Notifications::NotificationsService::Client.new(ch)
@@ -312,10 +315,6 @@ module MinknowTui
       false
     end
 
-    private def refused?(ex : Exception) : Bool
-      self.class.refused?(ex)
-    end
-
     def self.failure(ex : Exception) : String
       return "Invalid MINKNOW_TRUSTED_CA: not a certificate file path" if ex.is_a?(ConnectionConfig::InvalidCAPath)
       if ex.is_a?(GRPC::StatusError)
@@ -327,10 +326,6 @@ module MinknowTui
         end
       end
       "Reconnecting (#{ex.class})"
-    end
-
-    private def failure(ex : Exception) : String
-      self.class.failure(ex)
     end
 
     # ServerStream#each does not raise for trailer errors in this transport.
@@ -359,12 +354,11 @@ module MinknowTui
       value = yield
       return unless scope.active?
       caps[key] = "Available"
-      @store.changed
       value
     rescue ex
       if scope.active?
         previous = caps[key]?
-        caps[key] = failure(ex)
+        caps[key] = self.class.failure(ex)
         @store.connection = caps[key] if key == "manager_health"
         if previous != caps[key] && caps[key] != "Not applicable / no active run"
           @store.event("TUI", "WARN", "#{key}: #{caps[key]}")
@@ -435,7 +429,6 @@ module MinknowTui
         end
       end
       p.port = port
-      @store.changed
       return if !port || @positions.has_key?(raw.name)
       scope = Scope.new
       ch = channel(@config.with_port(port))
@@ -467,7 +460,6 @@ module MinknowTui
         p.current_acquisition = nil if r.ended_at
       end
       @store.sync_selection if @store.position_id == p.name
-      @store.changed
     end
 
     private def apply_acquisition(p : Position, raw : MA::Acquisition::AcquisitionRunInfo)
@@ -487,7 +479,6 @@ module MinknowTui
       p.live.basecalling_enabled = raw.config_summary.try(&.basecalling_enabled)
       raw.yield_summary.try { |summary| Decode.summary(p.live, summary) }
       @store.sync_selection if @store.position_id == p.name
-      @store.changed
     end
 
     private def start_position(p : Position, scope : Scope, ch : GRPC::Channel)
@@ -507,7 +498,6 @@ module MinknowTui
           p.updated_at = Time.utc
           p.connected = true
           p.capabilities["activity"] = "Available"
-          @store.changed
         end
       end
       start_reconciliation(p, scope, protocol, acquisition, device)
@@ -516,15 +506,13 @@ module MinknowTui
         value = device.get_temperature(MA::Device::GetTemperatureRequest.new, context)
         if scope.active? && (t = Decode.temperature(value))
           p.live.temperature_label, p.live.temperature = t
-          @store.changed
         end
       end
       # Position-level disk RPC replaces deprecated Manager disk RPC where available.
       poll(scope, p.capabilities, "disk", 15.seconds) do
         value = instance.get_disk_space_info(MA::Instance::GetDiskSpaceInfoRequest.new, context)
         if scope.active?
-          @store.disk = value.filesystem_disk_space_info.map { |disk| "#{MinknowTui.text(disk.filesystem_id)}: #{MinknowTui.number(disk.bytes_available, "B")} free / #{MinknowTui.number(disk.bytes_capacity, "B")}#{disk.recommend_alert ? " [LOW SPACE]" : ""}" }.join("\n")
-          @store.disk_updated_at = Time.utc
+          @store.disk = Decode.disk_space(value.filesystem_disk_space_info)
         end
       end
     end
@@ -652,7 +640,6 @@ module MinknowTui
       watch(scope, p.capabilities, "channels") do
         while scope.active? && (p.channels == 0 || p.has_flow_cell == false)
           p.capabilities["channels"] = p.has_flow_cell == false ? "No flow cell" : "Waiting for channel count"
-          @store.changed
           scope.pause(scaled_interval(0.5.seconds))
         end
         next unless scope.active?
@@ -661,7 +648,6 @@ module MinknowTui
         request.last_channel = p.channels
         request.wait_for_processing = true
         p.capabilities["channels"] = "Waiting for acquisition / channel snapshot"
-        @store.changed
         first = true
         consume(scope, client.get_channel_states(request, stream_context)) do |response|
           unless response.channel_states.empty?
@@ -675,7 +661,6 @@ module MinknowTui
             p.pore_updated_at = Time.utc
           end
           p.capabilities["channels"] = "Available"
-          @store.changed
         end
       end
     end
@@ -757,7 +742,6 @@ module MinknowTui
       spawn do
         while scope.active? && @store.current?(generation) && @store.tab == tab
           caps.each { |key, value| p.capabilities["detail.#{key}"] = value }
-          @store.changed
           scope.pause(scaled_interval(0.5.seconds))
         end
       end
@@ -793,7 +777,6 @@ module MinknowTui
               metrics.estimated.put(snapshot.seconds, y.estimated_selected_bases)
             end
           end
-          @store.changed
         end
       end
     end
@@ -832,7 +815,6 @@ module MinknowTui
               metrics.occupancy = response.pore_occupancy[index]?.try(&.to_f64)
             end
           end
-          @store.changed
         end
       end
     end
@@ -854,7 +836,6 @@ module MinknowTui
             end
             metrics.qscore_modal = data.modal_q_score.to_f64
           end
-          @store.changed
         end
       end
     end
@@ -869,7 +850,6 @@ module MinknowTui
             {index * 3600.0, dataset.q50.to_f64} if dataset.count > 0
           end.to_a
           metrics.qscore_medians.replace(points)
-          @store.changed
         end
       end
     end
@@ -880,7 +860,6 @@ module MinknowTui
         request.acquisition_run_id = id
         consume(scope, statistics.stream_bias_voltages(request, stream_context), caps, "bias_voltage") do |response|
           response.bias_voltages.each { |packet| metrics.bias_voltages.put(packet.time_seconds, packet.bias_voltage) }
-          @store.changed
         end
       end
     end
@@ -899,7 +878,6 @@ module MinknowTui
             value = estimate.estimated
             value.nil? || value.min_time != value.max_time
           end
-          @store.changed
         end
       end
     end
@@ -919,7 +897,6 @@ module MinknowTui
             end
             index += 1
           end
-          @store.changed
         end
       end
     end
@@ -962,9 +939,7 @@ module MinknowTui
           request.data_selection = MA::Statistics::DataSelection.new.tap(&.step=(1000_u64))
           begin
             consume(scope, client.stream_read_length_histogram(request, stream_context), caps, "read_lengths") do |response|
-              caps["read_lengths"] = "Available"
               apply_histogram(metrics, response)
-              @store.changed
             end
             completed = true
             break

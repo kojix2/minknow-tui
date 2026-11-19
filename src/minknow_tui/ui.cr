@@ -232,7 +232,6 @@ module MinknowTui
       end
       @tabs.on(CT::Event::CurrentChanged) do |event|
         @store.tab = event.index
-        @store.changed
         refresh unless @refreshing || @window.destroyed?
       end
       @window.on(CT::Event::Resize) { adapt; refresh }
@@ -358,8 +357,12 @@ module MinknowTui
       runs.select { |run| "#{run.label} #{run.id} #{run.experiment}".downcase.includes?(@store.filter.downcase) }
     end
 
+    private def matching_positions : Array(Position)
+      @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
+    end
+
     private def update_lists
-      values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
+      values = matching_positions
       @position_keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
       width = Math.max(8, @positions_view.awidth - 3)
       state_width = Math.min(25, values.max_of? { |position| display_width(position.status) } || 8)
@@ -724,7 +727,7 @@ module MinknowTui
     end
 
     def pick_position
-      values = @store.positions.values.sort_by!(&.name).select { |position| "#{position.name} #{position.status} #{position.error}".downcase.includes?(@store.filter.downcase) }
+      values = matching_positions
       keys = [nil.as(String?)] + values.map { |position| position.name.as(String?) }
       labels = ["Host overview"] + values.map { |position| "#{MinknowTui.text(position.name)}  #{device_label(position)}  #{position.status}" }
       picker = Picker.new(@window, "Positions", labels, keys.index(@store.position_id) || 0) do |i|
@@ -818,7 +821,6 @@ module MinknowTui
         return unless view_key(event.char) || control_key(event.key)
       end
       event.accept
-      @store.changed
       refresh
     end
 

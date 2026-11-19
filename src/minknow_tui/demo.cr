@@ -14,7 +14,6 @@ module MinknowTui
       @store.host_description = "Simulated GridION / DEMO001"
       @store.connection = "Connected [DEMO]"
       @store.disk = "demo-data: 820 GB free / 2.00 TB"
-      @store.disk_updated_at = Time.utc
       ["X1", "X2", "X3", "X4"].each_with_index do |name, index|
         p = Position.new(name)
         p.software = index == 3 ? "Hardware Error" : "Running"
@@ -101,7 +100,6 @@ module MinknowTui
         m.temperatures.put(7200 + @tick, 35.0 + Math.sin(@tick / 10.0) * 0.2)
       end
       @store.event("X1", "INFO", "Demo acquisition is sequencing normally") if @tick % 30 == 0
-      @store.changed
     end
 
     private def seed_detail
@@ -125,10 +123,10 @@ module MinknowTui
       m.temperature_label = "Heatsink"
       m.channel_states = {"strand" => 78.0, "pore" => 12.0, "unavailable" => 7.0, "other" => 3.0}
       m.state_styles = {
-        "strand"      => StateStyle.new("Sequencing", "Read in progress", "#00ff00", "Sequencing", 1_u32),
-        "pore"        => StateStyle.new("Pore available", "Ready", "#00cc00", "Pore available", 2_u32),
-        "unavailable" => StateStyle.new("Unavailable", "", "#54b8b1", "Unavailable", 3_u32),
-        "other"       => StateStyle.new("Other", "", "#ccd5d8", "Other", 4_u32),
+        "strand"      => StateStyle.new("Sequencing", "#00ff00", "Sequencing", 1_u32),
+        "pore"        => StateStyle.new("Pore available", "#00cc00", "Pore available", 2_u32),
+        "unavailable" => StateStyle.new("Unavailable", "#54b8b1", "Unavailable", 3_u32),
+        "other"       => StateStyle.new("Other", "#ccd5d8", "Other", 4_u32),
       }
       m.basecalling_enabled = true
       m.basecall_model = "dna_r10.4.1_e8.2_400bps_sup"
