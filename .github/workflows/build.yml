@@ -36,6 +36,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate GitHub Actions workflows
+        if: runner.os == 'Linux' && env.CI_MODE == 'check'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@latest -shellcheck= .github/workflows/*.yml
+
       - name: Prepare Linux compiler image
         if: runner.os == 'Linux'
         id: linux
