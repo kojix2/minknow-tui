@@ -6,6 +6,30 @@
 Read-only MinKNOW terminal monitor. Displays positions, protocol runs,
 acquisition statistics and events through the MinKNOW API.
 
+## Screenshots
+
+Demo data at 120×36 terminal cells. The [Screenshots workflow](https://github.com/kojix2/minknow-tui/actions/workflows/screenshot.yml)
+updates images on the separate [`screenshots` branch](https://github.com/kojix2/minknow-tui/tree/screenshots).
+
+| Overview | Yield |
+| --- | --- |
+| ![Overview](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-overview.png) | ![Yield](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-yield.png) |
+| Quality | Device |
+| ![Quality](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-quality.png) | ![Device](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-device.png) |
+| Pores | Activity |
+| ![Pores](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-pores.png) | ![Activity](https://raw.githubusercontent.com/kojix2/minknow-tui/screenshots/120x36-activity.png) |
+
+The branch's [full gallery](https://github.com/kojix2/minknow-tui/blob/screenshots/README.md)
+also includes 80×24 layouts, alternate graphs, run history, selection dialogs
+and the live-current viewer. Images are generated headlessly without MinKNOW
+or hardware, and can be embedded directly using the raw URLs above.
+
+The workflow runs on relevant `main` changes or manually with `main` selected.
+Its first run creates the orphan branch; later runs update it without rewriting
+history. The branch contains PNGs, a gallery README and `SOURCE.txt` identifying
+the source commit. Text dumps remain available in the workflow artifact.
+Screenshot generation uses a non-release build and no persistent compiler cache.
+
 ## Build
 
 Install Crystal, Shards and native libraries:
@@ -177,6 +201,7 @@ brew install crystal-ameba/ameba/ameba  # or use your package manager
 ameba src spec tools
 bash spec/test_runner_spec.sh
 bash spec/build_script_spec.sh
+bash spec/screenshot_publish_spec.sh
 bash tools/test.sh --profile
 crystal tool format --check src spec tools
 crystal run tools/capture.cr -- /tmp/minknow-tui-captures

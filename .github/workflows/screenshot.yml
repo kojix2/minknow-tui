@@ -1,0 +1,72 @@
+name: Screenshots
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tools/capture.cr'
+      - 'tools/publish-screenshots.sh'
+      - 'spec/screenshot_publish_spec.sh'
+      - 'shard.yml'
+      - 'shard.lock'
+      - '.github/workflows/screenshot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: screenshots
+  cancel-in-progress: false
+
+jobs:
+  screenshot:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TERM: xterm-256color
+      TZ: UTC
+      SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+      CRYSTAL_CACHE_DIR: ${{ runner.temp }}/crystal-screenshot
+    steps:
+      - uses: actions/checkout@main
+        with:
+          persist-credentials: false
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: latest
+
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgc-dev libpcre2-dev libyaml-dev libevent-dev zlib1g-dev \
+            libnghttp2-dev libunibilium-dev libssl-dev libreadline-dev libedit-dev ncurses-term
+
+      - name: Install shards
+        run: shards install --frozen
+
+      - name: Capture demo screens without release optimization
+        run: |
+          crystal run tools/capture.cr -Dwithout_readline --no-debug -- "$SCREENSHOT_DIR"
+          git rev-parse HEAD > "$SCREENSHOT_DIR/SOURCE.txt"
+
+      - uses: actions/upload-artifact@main
+        with:
+          name: demo-screenshots
+          path: ${{ env.SCREENSHOT_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Check screenshot publication
+        run: bash spec/screenshot_publish_spec.sh
+
+      - name: Publish to the screenshots orphan branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git --hostname github.com
+          bash tools/publish-screenshots.sh "$SCREENSHOT_DIR"

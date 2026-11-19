@@ -22,14 +22,14 @@ FileUtils.mkdir_p(destination)
     width: size[0], height: size[1], default_quit_keys: false,
     terminfo: Unibilium.from_terminal("xterm-256color"), force_unicode: true)
   ui = MinknowTui::UI.new(store, window)
-  6.times do |tab|
+  %w[overview yield quality device pores activity].each_with_index do |name, tab|
     window.press(('1'.ord + tab).chr)
-    snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-#{tab + 1}"))
+    snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-#{name}"))
   end
   window.press('3')
-  2.times do |mode|
+  %w[qscore-histogram qscore-time].each do |name|
     window.press('v')
-    snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-quality-#{mode + 1}"))
+    snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-#{name}"))
   end
   window.press('v')
   window.press('h')
@@ -47,7 +47,16 @@ FileUtils.mkdir_p(destination)
   window.press('5')
   window.press(Tput::Key::End)
   snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-last-channel"))
+  window.press('t')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-current-trace"))
+  window.press(Tput::Key::Escape)
   window.press('1')
+  window.press('i')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-details"))
+  window.press(Tput::Key::Escape)
+  window.press('a')
+  snapshot(window, ui, demo, File.join(destination, "#{size[0]}x#{size[1]}-acquisitions"))
+  window.press(Tput::Key::Escape)
   window.press('r')
   window.repaint
   window.press(Tput::Key::Down)
@@ -91,4 +100,22 @@ FileUtils.mkdir_p(destination)
   demo.stop
   window.destroy
 end
+
+repository = ENV["GITHUB_REPOSITORY"]? || "kojix2/minknow-tui"
+File.write(File.join(destination, "README.md"), String.build do |io|
+  io << "# Demo screenshots\n\nGenerated with `tools/capture.cr`; all data is simulated.\n"
+  if sha = ENV["GITHUB_SHA"]?
+    io << "\nSource: [" << sha << "](https://github.com/" << repository << "/commit/" << sha << ")\n"
+  end
+  io << "\nEmbed a screenshot in the main README with:\n\n```markdown\n"
+  io << "![Overview](https://raw.githubusercontent.com/" << repository << "/screenshots/120x36-overview.png)\n```\n"
+  %w[120x36 80x24].each do |size|
+    io << "\n## " << size << "\n"
+    Dir.glob(File.join(destination, "#{size}-*.png")).sort!.each do |path|
+      filename = File.basename(path)
+      label = File.basename(path, ".png").lchop("#{size}-").split('-').map(&.capitalize).join(' ')
+      io << "\n### " << label << "\n\n![" << label << "](" << filename << ")\n"
+    end
+  end
+end)
 puts destination
