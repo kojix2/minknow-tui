@@ -18,7 +18,7 @@ shards:
 
   grpc:
     git: https://github.com/kojix2/grpc.git
-    version: 0.1.0+git.commit.a4cb6a4a02a08187f1bc90af856c61e28836ca1e
+    version: 0.1.0+git.commit.aaa2eed7c26edbfc3239c9a84f660311235bfdce
 
   html5:
     git: https://github.com/naqvis/crystal-html5.git
