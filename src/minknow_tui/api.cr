@@ -46,15 +46,51 @@ module MinknowTui
     end
 
     def flow_cell(p : Position, value : MinknowApi::Device::GetFlowCellInfoResponse)
-      if p.flow_cell != value.flow_cell_id || p.has_flow_cell != value.has_flow_cell
+      flow_cell = MinknowTui.text(value.flow_cell_id)
+      product = MinknowTui.text(value.product_code)
+      if {p.flow_cell, p.product, p.has_flow_cell, p.channels} != {flow_cell, product, value.has_flow_cell, value.channel_count}
         p.pore_states.clear
         p.state_styles.clear
         p.pore_updated_at = nil
+        p.reset_pore_layout
       end
       p.has_flow_cell = value.has_flow_cell
-      p.flow_cell = MinknowTui.text(value.flow_cell_id)
-      p.product = MinknowTui.text(value.product_code)
+      p.flow_cell = flow_cell
+      p.product = product
       p.channels = value.channel_count
+    end
+
+    def pore_layout(value : MinknowApi::Device::GetChannelsLayoutResponse, channels : UInt32) : PoreLayout?
+      return unless value.channel_records.size == channels && (layout = PoreLayout.reference(channels))
+      records = value.channel_records
+      channel_offset = records.any? { |record| record.id == 0 } ? 1_u32 : 0_u32
+      well_offset = records.any?(&.mux_records.any? { |mux| mux.id == 0 }) ? 1_u32 : 0_u32
+      seen = Set(PoreLayout::Cell).new
+      native_match = screen_match = true
+      records.each do |record|
+        return if record.id > channels || record.mux_records.size != layout.well_count
+        channel = (record.id + channel_offset).to_i
+        record.mux_records.each do |mux|
+          return if mux.id > layout.well_count
+          cell = PoreLayout::Cell.new(channel, mux.id + well_offset)
+          return unless (point = layout.wells.point(cell)) && seen.add?(cell)
+          # Accept either native chip or normalized display coordinates, but
+          # only when the whole response agrees with the reference.
+          coord = {mux.phys_x, mux.phys_y}
+          screen_match &&= coord == {point.column, point.row}
+          native_match &&= coord == native_pore_coordinate(channels, point)
+          return unless native_match || screen_match
+        end
+      end
+      layout
+    end
+
+    private def native_pore_coordinate(channels : UInt32, point : PoreLayout::Point)
+      case channels
+      when 512 then {32 - point.row, 8 + point.column}
+      when 126 then {point.column + 1, point.row + 1}
+      else          {point.column, 99 - point.row}
+      end
     end
 
     def device(p : Position, value : MinknowApi::Device::GetDeviceInfoResponse)
@@ -134,7 +170,7 @@ module MinknowTui
     @selected_position : String? = nil
     @selection_generation = UInt64::MAX
     @selected_tab = -1
-    @channel_acquisition : String? = nil
+    @channel_context : Tuple(String?, UInt64)? = nil
     @subscribed_trace : SignalTrace?
     @local_auth_token : String? = nil
     @config : ConnectionConfig
@@ -424,6 +460,7 @@ module MinknowTui
           p.live = Metrics.new
           p.pore_states.clear
           p.pore_updated_at = nil
+          p.reset_pore_layout
           p.connected = false
           @store.reset_detail if @store.position_id == raw.name
         end
@@ -592,13 +629,13 @@ module MinknowTui
           end
         end
       end
-      channel_acquisition = @store.tab == 4 ? @store.position.try(&.current_acquisition) : nil
-      return if @selection_generation == @store.generation && @selected_tab == @store.tab && @channel_acquisition == channel_acquisition
+      channel_context = @store.position.try { |position| {position.current_acquisition, position.pore_layout_revision} } if @store.tab == 4
+      return if @selection_generation == @store.generation && @selected_tab == @store.tab && @channel_context == channel_context
       @details.stop
       @details = Scope.new
       @selection_generation = @store.generation
       @selected_tab = @store.tab
-      @channel_acquisition = channel_acquisition
+      @channel_context = channel_context
       if entry = @positions[@store.position_id]?
         if @store.tab == 4
           start_channels(entry[0], @details, entry[2])
@@ -636,6 +673,7 @@ module MinknowTui
 
     private def start_channels(p : Position, scope : Scope, ch : GRPC::Channel)
       client = MA::Data::DataService::Client.new(ch)
+      start_pore_layout(p, scope, ch)
       load_channel_styles(p, scope, ch)
       watch(scope, p.capabilities, "channels") do
         while scope.active? && (p.channels == 0 || p.has_flow_cell == false)
@@ -649,7 +687,9 @@ module MinknowTui
         request.wait_for_processing = true
         p.capabilities["channels"] = "Waiting for acquisition / channel snapshot"
         first = true
+        revision = p.pore_layout_revision
         consume(scope, client.get_channel_states(request, stream_context)) do |response|
+          next if p.pore_layout_revision != revision
           unless response.channel_states.empty?
             p.pore_states.clear if first
             first = false
@@ -661,6 +701,31 @@ module MinknowTui
             p.pore_updated_at = Time.utc
           end
           p.capabilities["channels"] = "Available"
+        end
+      end
+    end
+
+    private def start_pore_layout(p : Position, scope : Scope, ch : GRPC::Channel)
+      device = MA::Device::DeviceService::Client.new(ch)
+      spawn do
+        while scope.active?
+          break if p.pore_layout || {"Unsupported", "Unknown layout"}.includes?(p.capabilities["pore_layout"]?)
+          if p.has_flow_cell == true && p.channels > 0
+            revision = p.pore_layout_revision
+            channels = p.channels
+            value = attempt(scope, p.capabilities, "pore_layout") do
+              device.get_channels_layout(MA::Device::GetChannelsLayoutRequest.new, context)
+            end
+            if scope.active?
+              if p.pore_layout_revision != revision
+                p.capabilities.delete("pore_layout")
+              elsif value
+                p.pore_layout = Decode.pore_layout(value, channels)
+                p.capabilities["pore_layout"] = "Unknown layout" unless p.pore_layout
+              end
+            end
+          end
+          scope.pause(scaled_interval(2.seconds))
         end
       end
     end

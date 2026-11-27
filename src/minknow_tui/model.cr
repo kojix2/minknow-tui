@@ -1,5 +1,6 @@
 require "set"
 require "deque"
+require "./pore_layout"
 
 module MinknowTui
   VERSION = {{ `shards version "#{__DIR__}/../.."`.chomp.stringify }}
@@ -238,6 +239,14 @@ module MinknowTui
     getter capabilities = {} of String => String
     getter pore_states = {} of Int32 => ChannelState
     property pore_updated_at : Time? = nil
+    property pore_layout : PoreLayout? = nil
+    getter pore_layout_revision = 0_u64
+
+    def reset_pore_layout
+      @pore_layout_revision &+= 1
+      @pore_layout = nil
+      capabilities.delete("pore_layout")
+    end
 
     def update_channel(channel : Int32, value : ChannelState)
       return unless channel > 0 && channel <= channels

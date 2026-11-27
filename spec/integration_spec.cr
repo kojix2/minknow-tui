@@ -1,6 +1,7 @@
 require "spec"
 require "file/tempfile"
 require "./support/fake_minknow"
+require "./support/pore_layout_data"
 
 private def with_token_file(contents : String, &)
   file = File.tempfile("minknow-tui-token", ".json")
@@ -225,6 +226,33 @@ describe "MinKNOW compatibility over local HTTP/2" do
       wait_for { store.position.try(&.capabilities["channels"]?) == "Unsupported" }
       store.tab = 0
       wait_for { store.detail.reads == 100_i64 }
+    end
+  end
+
+  it "loads a physical layout on demand and discards it when the flow cell changes" do
+    with_fake_minknow do |api, store, peers, calls|
+      endpoint = peers.find!(&.service_full_name.ends_with?("device.DeviceService"))
+      endpoint.layout_response = PoreLayoutData.response(512)
+      api.start
+      wait_for { store.positions["X1"]?.try(&.has_flow_cell) == true }
+      store.select_position("X1")
+      calls.any?(&.ends_with?("/get_channels_layout")).should be_false
+      store.tab = 4
+      position = store.positions["X1"]
+      wait_for { !position.pore_layout.nil? }
+      position.pore_layout.try(&.channels.at(0, 0)).try(&.channel).should eq(33)
+      endpoint.layout_response = nil
+      endpoint.flow_cell_present = false
+      wait_for { position.has_flow_cell == false }
+      position.pore_layout.should be_nil
+      endpoint.flow_cell_id = "TEST002"
+      endpoint.flow_cell_present = true
+      wait_for { position.capabilities["pore_layout"]? == "Unsupported" }
+      position.pore_layout.should be_nil
+      endpoint.layout_response = PoreLayoutData.response(512, screen: true, zero_based: false)
+      endpoint.flow_cell_id = "TEST003"
+      wait_for { position.flow_cell == "TEST003" && !position.pore_layout.nil? }
+      position.capabilities["pore_layout"].should eq("Available")
     end
   end
 

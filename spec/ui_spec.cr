@@ -114,8 +114,11 @@ describe "minknow-tui headless UI" do
         position = store.positions["X1"]
         live, old, older = position.history
         old.output = "/data/" + "sequencing-output/" * 24 + old.sample
-        old.started_at = Time.local(2026, 11, 18, 21, 8)
-        old.ended_at = old.started_at.try { |start| start + 10.minutes }
+        start = Time.local(2026, 11, 18, 21, 8)
+        old.started_at = start
+        old.ended_at = start + 10.minutes
+        older.started_at = start - 1.day
+        older.ended_at = start - 23.hours
         unless interface.compact?
           interface.refresh
           window.repaint
@@ -158,7 +161,7 @@ describe "minknow-tui headless UI" do
   it "opens the selected live pore trace and restores the pore grid on Escape" do
     with_ui(80, 24) do |store, demo, interface, window|
       window.press('5')
-      window.press(Tput::Key::Right)
+      window.press(Tput::Key::Left)
       window.press('t')
       trace = store.trace || fail "Expected a trace for the selected channel"
       trace.channel.should eq(2)
@@ -178,6 +181,45 @@ describe "minknow-tui headless UI" do
       interface.refresh
       window.press('t')
       interface.dialog.should be_nil
+    end
+  end
+
+  it "keeps physical wells in place and colors only the well that reported the state" do
+    with_ui(120, 36) do |store, _, interface, window|
+      position = store.positions["X1"]
+      position.update_channel(33, MinknowTui::ChannelState.new("pore", 3_u32))
+      window.press('5')
+      window.press(Tput::Key::Home)
+      interface.pores.selected_channel.should eq(33)
+      window.press('v')
+      window.repaint
+      grid = interface.pores.grid
+      row = grid.atop
+      x = grid.aleft + 5
+      interface.pores.info.content.should contain("Physical wells | map well 3")
+      window.cell_rows[row][x].char.should eq('P')
+      window.cell_rows[row][x + 3].char.should eq('·')
+
+      position.update_channel(33, MinknowTui::ChannelState.new("strand", 2_u32))
+      interface.refresh
+      window.repaint
+      interface.pores.selected_channel.should eq(33)
+      interface.pores.info.content.should contain("Physical wells | map well 2")
+      window.cell_rows[row][x].char.should eq('·')
+      window.cell_rows[row][x + 3].char.should eq('S')
+      window.cell_rows[row][x + 32].char.should eq(' ')
+
+      window.click(x + 2, row)
+      interface.pores.info.content.should contain("Physical wells | map well 1")
+      window.click(x + 32, row)
+      interface.pores.info.content.should contain("Physical wells | map well 1")
+      position.update_channel(33, MinknowTui::ChannelState.new("unavailable", 0_u32))
+      interface.refresh
+      window.repaint
+      (0...4).each { |i| window.cell_rows[row][x + i].char.should eq('·') }
+      window.press('v')
+      interface.pores.selected_channel.should eq(33)
+      interface.pores.info.content.should contain("Physical channels")
     end
   end
 
@@ -399,6 +441,7 @@ describe "minknow-tui headless UI" do
       with_ui(size[0], size[1]) do |store, _, interface, window|
         position = store.positions["X1"]
         position.channels = 12_u32
+        position.pore_layout = nil
         position.pore_states.clear
         position.state_styles.clear
         samples = [
@@ -460,12 +503,19 @@ describe "minknow-tui headless UI" do
         window.repaint
         window.dump.to_s.should contain("LIVE X1")
         window.dump.to_s.should contain("Channel 1/512")
-        window.press(Tput::Key::Right)
+        window.dump.to_s.should contain("Physical channels")
+        window.press(Tput::Key::Left)
         interface.pores.selected_channel.should eq(2)
-        window.press('h')
+        window.press('l')
         interface.pores.selected_channel.should eq(1)
+        window.press(Tput::Key::Down)
+        interface.pores.selected_channel.should eq(9)
+        window.press(Tput::Key::Home)
+        interface.pores.selected_channel.should eq(33)
+        8.times { window.press(Tput::Key::Right) }
+        interface.pores.selected_channel.should eq(8)
         window.press(Tput::Key::End)
-        interface.pores.selected_channel.should eq(512)
+        interface.pores.selected_channel.should eq(89)
         store.select_run("demo-X1-protocol-1")
         demo.update
         interface.refresh
@@ -479,7 +529,12 @@ describe "minknow-tui headless UI" do
         window.repaint
         window.press(Tput::Key::End)
         interface.pores.selected_channel.should eq(3000)
-        interface.pores.grid.child_base.should be > 0
+        grid = interface.pores.grid
+        grid.child_base.should be > 0
+        grid.child_base_x.should be > 0
+        window.repaint
+        window.click(grid.aleft + 5 + 124 - grid.child_base_x, grid.atop + 24 - grid.child_base)
+        interface.pores.selected_channel.should eq(2999)
         window.press(Tput::Key::Home)
         interface.pores.selected_channel.should eq(1)
         window.press('3')

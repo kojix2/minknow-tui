@@ -84,6 +84,7 @@ module MinknowTui
                             "h (Quality)       Trim 1% each end / full read-length range\n" +
                             "d / u (Activity) Detailed/grouped states; percent/absolute\n" +
                             "Arrows / hjkl     Select channel in Pores (Home/End, PgUp/PgDn)\n" +
+                            "v (Pores)         Switch between physical channels and wells\n" +
                             "t (Pores)         View current from the selected live channel\n" +
                             "p                 Select position (also in compact mode)\n" +
                             "r                 Follow the current run or select history\n" +

@@ -21,9 +21,8 @@ module MinknowTui
         p.error = index == 3 ? "Simulated hardware communication error" : ""
         p.has_flow_cell = index < 2
         p.flow_cell = index < 2 ? "ABC1234#{index}" : ""
-        p.product = "FLO-MIN114"
         p.device = "DEMO-#{name}"
-        p.device_type, p.channels = index == 1 ? {"PromethION", 3000_u32} : {"MinION", 512_u32}
+        configure_flow_cell(p, promethion: index == 1)
         p.simulated = true
         p.port = 8000 + index
         p.connected = index != 3
@@ -57,6 +56,11 @@ module MinknowTui
       @store.event("Host", "WARN", "Demo notification: inspect X4 hardware status")
       @store.event("X1", "INFO", "Protocol started")
       update
+    end
+
+    private def configure_flow_cell(p : Position, *, promethion : Bool)
+      p.device_type, p.channels, p.product = promethion ? {"PromethION", 3000_u32, "FLO-PRO114M"} : {"MinION", 512_u32, "FLO-MIN114"}
+      p.pore_layout = PoreLayout.reference(p.channels) if p.has_flow_cell
     end
 
     def start

@@ -11,6 +11,9 @@ class FakeMinKnow < GRPC::Service
   property? active_run = true
   property? flow_cell_available = true
   property flow_cell_delay = 0.seconds
+  property flow_cell_id = "TEST001"
+  property? flow_cell_present = true
+  property layout_response : MA::Device::GetChannelsLayoutResponse? = nil
   property? activity_available = false
   property? statistics_available = false
   property? keep_statistics_open = false
@@ -70,7 +73,13 @@ class FakeMinKnow < GRPC::Service
                when {"minknow_api.device.DeviceService", "get_flow_cell_info"}
                  sleep flow_cell_delay if flow_cell_delay > 0.seconds
                  return {Bytes.empty, GRPC::Status.unimplemented} unless flow_cell_available?
-                 MA::Device::GetFlowCellInfoResponse.new.tap { |reply| reply.has_flow_cell = true; reply.flow_cell_id = "TEST001"; reply.channel_count = 512_u32 }
+                 MA::Device::GetFlowCellInfoResponse.new.tap do |reply|
+                   reply.has_flow_cell = flow_cell_present?
+                   reply.flow_cell_id = flow_cell_id
+                   reply.channel_count = 512_u32
+                 end
+               when {"minknow_api.device.DeviceService", "get_channels_layout"}
+                 layout_response || return {Bytes.empty, GRPC::Status.unimplemented}
                when {"minknow_api.device.DeviceService", "get_device_info"}
                  sleep device_info_delay if device_info_delay > 0.seconds
                  MA::Device::GetDeviceInfoResponse.new.tap(&.device_id=("FIXTURE"))

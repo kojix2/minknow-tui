@@ -57,6 +57,7 @@ bin/minknow-tui --host localhost --port 9501
 | j / k, arrows | Select or scroll |
 | 1–6 | Overview, Yield, Quality, Device, Pores, Activity |
 | v | Switch Quality graphs or Device history graphs |
+| v (Pores) | Toggle physical channel and well maps when layout is available |
 | h | Show full read-length range or trim 1% at each end |
 | d / u | Activity: detailed/grouped states; percent/absolute time |
 | t (Pores) | Open the selected channel's live current trace. Esc returns to the pore map. |
@@ -139,6 +140,16 @@ available. Pores uses state colors as cell backgrounds with contrasting black
 or white letters, also shown in its legend. If metadata is missing, colors fall
 back to MinKNOW 25.09 sequencing defaults. Dots mark channels with no received
 state. Terminals without true color use the nearest supported colors.
+
+Pores defaults to `Physical channels` when the connected MinKNOW reports a
+recognized MinION/GridION, Flongle, or PromethION layout. Each channel stays in
+place when its selected well changes. Physical gaps are preserved and narrow
+terminals scroll instead of wrapping the map. Arrows or hjkl move by position,
+and Home/End select the first/last occupied position in map order. Press `v` to
+see the individual physical wells. Only the well reported with a channel state
+gets that state's color. The remaining wells show a neutral dot and do not imply
+that those pores are absent. If the layout is unavailable or unrecognized, the
+map stays in `Channel order`.
 Q-score graphs require basecalling. The Overview's remaining time
 comes from MinKNOW run-until estimates and may be unavailable for historical
 runs. Read-length trimming only changes the chart; it does not change N50.
