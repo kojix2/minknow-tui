@@ -2,7 +2,7 @@
 
 Generated with `tools/capture.cr`; all data is simulated.
 
-Source: [17468b24752d8c33d8dc7b701badd78d3a110c73](https://github.com/kojix2/minknow-tui/commit/17468b24752d8c33d8dc7b701badd78d3a110c73)
+Source: [d8d4846fe0ce53f49c4995fff0bfa18f801d37ab](https://github.com/kojix2/minknow-tui/commit/d8d4846fe0ce53f49c4995fff0bfa18f801d37ab)
 
 Embed a screenshot in the main README with:
 
