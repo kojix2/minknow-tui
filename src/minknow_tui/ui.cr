@@ -628,7 +628,7 @@ module MinknowTui
                 metrics.state_styles.values.find { |item| item.group == name }
               end
       color = @activity_detailed ? style.try(&.terminal_colour) : style.try(&.group_terminal_colour)
-      color || PoreMap.appearance(name)[1]
+      color || Theme.channel_appearance(name)[1]
     end
 
     private def update_graph_visibility

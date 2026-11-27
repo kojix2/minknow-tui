@@ -23,14 +23,18 @@ describe MinknowTui::PoreLayout do
     (0...8).map { |col| layout.wells.at(0, col).try(&.well) }.should eq([3, 4, 1, 2, 2, 1, 4, 3])
     (32...36).each { |col| layout.wells.at(0, col).should be_nil }
     layout.wells.at(0, 67).should eq(MinknowTui::PoreLayout::Cell.new(1, 3_u32))
+    layout.native_coordinates(MinknowTui::PoreLayout::Point.new(0, 67)).should eq({32, 75})
+    layout.native_coordinates(MinknowTui::PoreLayout::Point.new(28, 65)).should eq({4, 73})
   end
 
   it "keeps Flongle's missing wells and gaps between PromethION blocks" do
-    flongle = (MinknowTui::PoreLayout.reference(126) || fail "Missing Flongle layout").channels
+    layout = MinknowTui::PoreLayout.reference(126) || fail "Missing Flongle layout"
+    flongle = layout.channels
     {flongle.rows, flongle.columns}.should eq({10, 13})
     (0...10).select { |row| flongle.at(row, 12).nil? }.should eq([0, 1, 8, 9])
     flongle.at(2, 12).try(&.channel).should eq(37)
     flongle.last.try(&.channel).should eq(126)
+    layout.native_coordinates(MinknowTui::PoreLayout::Point.new(2, 12)).should eq({13, 3})
     promethion = MinknowTui::PoreLayout.reference(3000) || fail "Missing PromethION layout"
     {promethion.channels.rows, promethion.channels.columns}.should eq({25, 126})
     {promethion.wells.rows, promethion.wells.columns}.should eq({100, 126})
@@ -39,6 +43,7 @@ describe MinknowTui::PoreLayout do
     promethion.channels.at(0, 31).should be_nil
     promethion.channels.at(0, 32).try(&.channel).should eq(751)
     promethion.wells.at(99, 125).should eq(MinknowTui::PoreLayout::Cell.new(3000, 1_u32))
+    promethion.native_coordinates(MinknowTui::PoreLayout::Point.new(99, 125)).should eq({125, 0})
   end
 end
 
@@ -61,5 +66,12 @@ describe MinknowTui::Decode do
     MinknowTui::Decode.pore_layout(response, 512_u32).should be_nil
     response.channel_records.pop
     MinknowTui::Decode.pore_layout(response, 512_u32).should be_nil
+  end
+
+  it "does not mix native and display frames in one response" do
+    native = PoreLayoutData.response(512)
+    screen = PoreLayoutData.response(512, screen: true)
+    native.channel_records[0] = screen.channel_records[0]
+    MinknowTui::Decode.pore_layout(native, 512_u32).should be_nil
   end
 end

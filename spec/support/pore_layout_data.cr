@@ -10,17 +10,9 @@ module PoreLayoutData
         Device::ChannelRecord.new.tap do |record|
           record.id = (channel - (zero_based ? 1 : 0)).to_u32
           record.name = channel.to_s
-          record.mux_records = (1..layout.well_count).reverse_each.map do |well|
+          record.mux_records = (1..layout.wells_per_channel).reverse_each.map do |well|
             point = layout.wells.point(MinknowTui::PoreLayout::Cell.new(channel, well.to_u32)) || raise "Missing fixture well"
-            x, y = if screen
-                     {point.column, point.row}
-                   else
-                     case count
-                     when 512 then {32 - point.row, point.column + 8}
-                     when 126 then {point.column + 1, point.row + 1}
-                     else          {point.column, 99 - point.row}
-                     end
-                   end
+            x, y = screen ? {point.column, point.row} : layout.native_coordinates(point)
             Device::ChannelRecord::MuxRecord.new.tap do |mux|
               mux.id = (well - (zero_based ? 1 : 0)).to_u32
               mux.phys_x = x.to_u32

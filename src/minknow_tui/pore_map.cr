@@ -5,7 +5,71 @@ require "./theme"
 module MinknowTui
   class PoreMap < Crysterm::Widgets::Box
     alias Cell = PoreLayout::Cell
+    alias Point = PoreLayout::Point
     LABEL_WIDTH = 5
+
+    # Shared by painting, clicks and scroll-to-selection. A numbered row's
+    # group separators are screen columns, not logical cells.
+    record Geometry, map : PoreLayout::Map? = nil, channel_count : Int32 = 0,
+      columns : Int32 = 64, cell_width : Int32 = 1 do
+      GROUP_SIZE = 8
+
+      def rows : Int32
+        map.try(&.rows) || (channel_count + columns - 1) // columns
+      end
+
+      def columns_at(row : Int32) : Int32
+        map ? columns : Math.min(columns, channel_count - row * columns)
+      end
+
+      def row_label(row : Int32) : Int32
+        map ? row + 1 : row * columns + 1
+      end
+
+      def separator_before?(column : Int32) : Bool
+        !map && column > 0 && column % GROUP_SIZE == 0
+      end
+
+      def cell_at(row : Int32, column : Int32) : Cell?
+        if physical = map
+          physical.at(row, column)
+        elsif 0 <= row < rows && 0 <= column < columns_at(row)
+          Cell.new(row_label(row) + column)
+        end
+      end
+
+      def from_content(x : Int32, row : Int32) : Cell?
+        x -= LABEL_WIDTH
+        return if x < 0
+        return cell_at(row, x // cell_width) if map
+        group, within = x.divmod(GROUP_SIZE + 1)
+        cell_at(row, group * GROUP_SIZE + within) if within < GROUP_SIZE
+      end
+
+      def point(cell : Cell) : Point?
+        if physical = map
+          physical.point(cell)
+        else
+          row, column = (cell.channel - 1).divmod(columns)
+          Point.new(row, column)
+        end
+      end
+
+      def cell_center(column : Int32) : Int32
+        LABEL_WIDTH + column * cell_width + (cell_width - 1) // 2
+      end
+    end
+
+    enum Move
+      Left
+      Right
+      Up
+      Down
+      PageUp
+      PageDown
+      First
+      Last
+    end
 
     class Grid < Crysterm::Widgets::ScrollableText
       def handle_key_press(event)
@@ -18,10 +82,8 @@ module MinknowTui
     getter! legend : Crysterm::Widgets::ScrollableText
     getter selected_channel = 1
     @position : Position?
-    @map : PoreLayout::Map?
+    @geometry = Geometry.new
     @signature : UInt64? = nil
-    @columns = 64
-    @cell_width = 1
     @show_wells = false
     @selected_well : UInt32? = nil
     @rendered_cell : Cell? = nil
@@ -35,21 +97,9 @@ module MinknowTui
         wrap_content: false, horizontal_scrollbar_policy: :as_needed)
       grid.on(Crysterm::Event::Resize) { refresh(@position); reveal_selection }
       grid.on(Crysterm::Event::Mouse) do |event|
-        if event.mouse.action.down?
-          x = event.local_x + grid.child_base_x - LABEL_WIDTH
-          y = event.local_y + grid.child_base
-          if x >= 0
-            if map = @map
-              map.at(y, x // @cell_width).try { |cell| select_cell(cell) }
-            elsif x % 9 < 8
-              column = (x // 9) * 8 + x % 9
-              channel = y * @columns + column + 1
-              if column < @columns && channel <= (@position.try(&.channels) || 0)
-                select_cell(Cell.new(channel))
-              end
-            end
-          end
-        end
+        next unless event.mouse.action.down?
+        cell = @geometry.from_content(event.local_x + grid.child_base_x, event.local_y + grid.child_base)
+        select_cell(cell) if cell
       end
     end
 
@@ -67,7 +117,7 @@ module MinknowTui
         info.content = "Select a position to see its live channel states."
         grid.content = ""
         legend.content = ""
-        @map = nil
+        @geometry = Geometry.new
         @signature = nil
         return
       end
@@ -75,14 +125,10 @@ module MinknowTui
       geometry_changed = configure_map(p)
       selected = selected_cell(p)
       update_info(p, selected)
-      signature = {p.name, p.channels, p.pore_states, p.state_styles, selected, @columns, @cell_width, @map}.hash
+      signature = {p.name, p.pore_states, p.state_styles, selected, @geometry}.hash
       return if signature == @signature
       @signature = signature
-      if map = @map
-        render_physical(p, map, selected)
-      else
-        render_grid(p)
-      end
+      render_grid(p, selected)
       update_legend(p)
       reveal_selection if geometry_changed || selected != @rendered_cell
       @rendered_cell = selected
@@ -95,20 +141,24 @@ module MinknowTui
     end
 
     private def configure_map(p : Position) : Bool
-      previous_columns, previous_width, previous_map = @columns, @cell_width, @map
-      @columns = awidth >= 76 ? 64 : awidth >= 40 ? 32 : 16
+      previous = @geometry
       map = p.pore_layout.try { |layout| @show_wells ? layout.wells : layout.channels }
-      @map = map
-      reset_cursor if previous_map != map
-      @cell_width = map && !@show_wells ? ((awidth - LABEL_WIDTH) // map.columns).clamp(1, 4) : 1
-      {previous_columns, previous_width, previous_map} != {@columns, @cell_width, @map}
+      reset_cursor if previous.map != map
+      @geometry = if map
+                    width = @show_wells ? 1 : ((awidth - LABEL_WIDTH) // map.columns).clamp(1, 4)
+                    Geometry.new(map, p.channels.to_i, map.columns, width)
+                  else
+                    columns = awidth >= 76 ? 64 : awidth >= 40 ? 32 : 16
+                    Geometry.new(channel_count: p.channels.to_i, columns: columns)
+                  end
+      previous != @geometry
     end
 
     private def update_info(p : Position, selected : Cell)
       state = p.pore_states[selected_channel]?
       status = p.capabilities["channels"]? || "Waiting for channel stream"
       stamp = p.pore_updated_at.try(&.to_local.to_s("%H:%M:%S")) || "not received"
-      mode = @map ? (@show_wells ? "Physical wells" : "Physical channels") : "Channel order"
+      mode = @geometry.map ? (@show_wells ? "Physical wells" : "Physical channels") : "Channel order"
       cursor = selected.well ? " | map well #{selected.well}" : ""
       info.content = "Channel #{selected_channel}/#{p.channels}: #{state.try(&.name) || "not received"} | well #{state.try(&.well) || "—"}\n" +
                      "#{mode}#{cursor}  ·  #{status}  ·  Last data: #{stamp}"
@@ -117,9 +167,9 @@ module MinknowTui
     private def update_legend(p : Position)
       counts = Hash(String, Int32).new(0)
       p.pore_states.each_value { |value| counts[value.name] += 1 }
-      hint = if @map && @show_wells
+      hint = if @geometry.map && @show_wells
                "· no state for well. v: channel map."
-             elsif @map
+             elsif @geometry.map
                ". not received: #{p.channels.to_i - p.pore_states.size}. v: well map."
              else
                ". not received: #{p.channels.to_i - p.pore_states.size}. Grid is channel order."
@@ -133,7 +183,7 @@ module MinknowTui
     end
 
     private def state_badge(p : Position, name : String?, width = 1) : String
-      glyph, default_color = self.class.appearance(name)
+      glyph, default_color = Theme.channel_appearance(name)
       padded = glyph.to_s.center(width)
       return "{#{default_color}-fg}#{padded}{/#{default_color}-fg}" unless name
       background = p.state_styles[name]?.try(&.terminal_colour) || default_color
@@ -149,33 +199,18 @@ module MinknowTui
       "{#{background}-bg}{#{foreground}-fg}#{padded}{/#{foreground}-fg}{/#{background}-bg}"
     end
 
-    private def render_grid(p : Position)
+    private def render_grid(p : Position, selected : Cell)
       badges = {} of String? => String
+      width = @geometry.cell_width
+      blank = " " * width
       grid.content = String.build do |text|
-        p.channels.to_i.times do |index|
-          if index % @columns == 0
-            text << '\n' unless index == 0
-            text << "%4d " % (index + 1)
-          elsif index % 8 == 0
-            text << ' '
-          end
-          name = p.pore_states[index + 1]?.try(&.name)
-          text << "{underline}" if index + 1 == selected_channel
-          text << badges.fetch(name) { badges[name] = state_badge(p, name) }
-          text << "{/underline}" if index + 1 == selected_channel
-        end
-      end
-    end
-
-    private def render_physical(p : Position, map : PoreLayout::Map, selected : Cell)
-      badges = {} of String? => String
-      grid.content = String.build do |text|
-        map.rows.times do |row|
+        @geometry.rows.times do |row|
           text << '\n' unless row == 0
-          text << "%4d " % (row + 1)
-          map.columns.times do |column|
-            unless cell = map.at(row, column)
-              text << (" " * @cell_width)
+          text << "%4d " % @geometry.row_label(row)
+          @geometry.columns_at(row).times do |column|
+            text << ' ' if @geometry.separator_before?(column)
+            unless cell = @geometry.cell_at(row, column)
+              text << blank
               next
             end
             state = p.pore_states[cell.channel]?
@@ -184,7 +219,7 @@ module MinknowTui
               text << "{#{Theme::MUTED}-fg}·{/#{Theme::MUTED}-fg}"
             else
               name = state.try(&.name)
-              text << badges.fetch(name) { badges[name] = state_badge(p, name, @cell_width) }
+              text << badges.fetch(name) { badges[name] = state_badge(p, name, width) }
             end
             text << "{/underline}" if cell == selected
           end
@@ -193,7 +228,7 @@ module MinknowTui
     end
 
     private def selected_cell(p : Position) : Cell
-      if @show_wells && (map = @map)
+      if @show_wells && (map = @geometry.map)
         preferred = @selected_well || p.pore_states[selected_channel]?.try(&.well)
         cell = Cell.new(selected_channel, preferred)
         return cell if map.point(cell)
@@ -203,32 +238,47 @@ module MinknowTui
     end
 
     def navigate(event : Crysterm::Event::KeyPress)
-      if event.char == 'v' && @map
+      if event.char == 'v' && @geometry.map
         @show_wells = !@show_wells
         refresh(@position)
-        event.accept
-      elsif (map = @map) && (p = @position)
-        navigate_physical(event, map, selected_cell(p))
+      elsif (move = movement(event)) && (p = @position)
+        target = if map = @geometry.map
+                   physical_target(move, map, selected_cell(p))
+                 else
+                   numbered_target(move)
+                 end
+        select_cell(target) if target
       else
-        navigate_numbered(event)
+        return
+      end
+      event.accept
+    end
+
+    private def movement(event : Crysterm::Event::KeyPress) : Move?
+      case
+      when event.key == Tput::Key::Left, event.char == 'h'  then Move::Left
+      when event.key == Tput::Key::Right, event.char == 'l' then Move::Right
+      when event.key == Tput::Key::Up, event.char == 'k'    then Move::Up
+      when event.key == Tput::Key::Down, event.char == 'j'  then Move::Down
+      when event.key == Tput::Key::PageUp                   then Move::PageUp
+      when event.key == Tput::Key::PageDown                 then Move::PageDown
+      when event.key == Tput::Key::Home                     then Move::First
+      when event.key == Tput::Key::End                      then Move::Last
       end
     end
 
-    private def navigate_physical(event, map, selected)
+    private def physical_target(move : Move, map : PoreLayout::Map, selected : Cell) : Cell?
       return unless point = map.point(selected)
-      cell = case
-             when event.key == Tput::Key::Left, event.char == 'h'  then scan(map, point, 0, -1)
-             when event.key == Tput::Key::Right, event.char == 'l' then scan(map, point, 0, 1)
-             when event.key == Tput::Key::Up, event.char == 'k'    then scan(map, point, -1, 0)
-             when event.key == Tput::Key::Down, event.char == 'j'  then scan(map, point, 1, 0)
-             when event.key == Tput::Key::PageUp                   then page(map, point, -1)
-             when event.key == Tput::Key::PageDown                 then page(map, point, 1)
-             when event.key == Tput::Key::Home                     then map.first
-             when event.key == Tput::Key::End                      then map.last
-             else                                                       return
-             end
-      select_cell(cell) if cell
-      event.accept
+      case move
+      in .left?      then scan(map, point, 0, -1)
+      in .right?     then scan(map, point, 0, 1)
+      in .up?        then scan(map, point, -1, 0)
+      in .down?      then scan(map, point, 1, 0)
+      in .page_up?   then page(map, point, -1)
+      in .page_down? then page(map, point, 1)
+      in .first?     then map.first
+      in .last?      then map.last
+      end
     end
 
     private def scan(map, point, dy, dx)
@@ -252,20 +302,19 @@ module MinknowTui
       end
     end
 
-    private def navigate_numbered(event)
-      delta = case
-              when event.key == Tput::Key::Left, event.char == 'h'  then -1
-              when event.key == Tput::Key::Right, event.char == 'l' then 1
-              when event.key == Tput::Key::Up, event.char == 'k'    then -@columns
-              when event.key == Tput::Key::Down, event.char == 'j'  then @columns
-              when event.key == Tput::Key::PageUp                   then -@columns * Math.max(1, grid.aheight)
-              when event.key == Tput::Key::PageDown                 then @columns * Math.max(1, grid.aheight)
-              when event.key == Tput::Key::Home                     then -selected_channel
-              when event.key == Tput::Key::End                      then @position.try(&.channels.to_i) || 0
-              else                                                       return
-              end
-      select_cell(Cell.new(selected_channel + delta))
-      event.accept
+    private def numbered_target(move : Move) : Cell
+      columns = @geometry.columns
+      step = case move
+             in .left?      then -1
+             in .right?     then 1
+             in .up?        then -columns
+             in .down?      then columns
+             in .page_up?   then -columns * Math.max(1, grid.aheight)
+             in .page_down? then columns * Math.max(1, grid.aheight)
+             in .first?     then return Cell.new(1)
+             in .last?      then return Cell.new(@geometry.channel_count)
+             end
+      Cell.new(selected_channel + step)
     end
 
     private def select_cell(cell : Cell)
@@ -278,39 +327,10 @@ module MinknowTui
 
     private def reveal_selection
       return unless p = @position
-      if map = @map
-        if point = map.point(selected_cell(p))
-          grid.ensure_visible(point.row)
-          grid.ensure_visible_x(LABEL_WIDTH + point.column * @cell_width + (@cell_width - 1) // 2)
-        end
-      else
-        grid.ensure_visible((selected_channel - 1) // @columns)
+      if point = @geometry.point(selected_cell(p))
+        grid.ensure_visible(point.row)
+        grid.ensure_visible_x(@geometry.cell_center(point.column)) if @geometry.map
       end
-    end
-
-    # Fallbacks from MinKNOW 25.09 sequencing_channel_states.toml.
-    # Acquisition metadata takes precedence over these defaults.
-    FALLBACK_APPEARANCES = {
-      nil                    => {'.', Theme::MUTED},
-      "strand"               => {'S', "#00ff00"},
-      "pore"                 => {'P', "#00cc00"},
-      "adapter"              => {'A', "#ede797"},
-      "no_pore"              => {'-', "#90c6e7"},
-      "unblocking"           => {'U', "#a53f97"},
-      "unavailable"          => {'!', "#54b8b1"},
-      "saturated"            => {'!', "#68767e"},
-      "multiple"             => {'M', "#f57e20"},
-      "unknown_negative"     => {'?', "#b5aea7"},
-      "unknown_positive"     => {'?', "#0084a9"},
-      "zero"                 => {'0', "#4da9c3"},
-      "disabled"             => {'x', "#ccd5d8"},
-      "locked"               => {'x', "#ccd5d8"},
-      "pending_mux_change"   => {'~', Theme::MUTED},
-      "pending_manual_reset" => {'~', Theme::MUTED},
-    }
-
-    def self.appearance(name : String?) : Tuple(Char, String)
-      FALLBACK_APPEARANCES[name]? || {'?', Theme::MUTED}
     end
   end
 end

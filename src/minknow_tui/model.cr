@@ -242,6 +242,11 @@ module MinknowTui
     property pore_layout : PoreLayout? = nil
     getter pore_layout_revision = 0_u64
 
+    def clear_pore_snapshot
+      pore_states.clear
+      @pore_updated_at = nil
+    end
+
     def reset_pore_layout
       @pore_layout_revision &+= 1
       @pore_layout = nil

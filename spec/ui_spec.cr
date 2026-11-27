@@ -475,6 +475,13 @@ describe "minknow-tui headless UI" do
         row[grid.aleft + 13].char.should eq(' ')
         row[grid.aleft + 15].char.should eq('.')
         Crysterm::Attr.bg(row[grid.aleft + 13].attr).should eq(Crysterm::Attr.bg(row[grid.aleft + 15].attr))
+        window.click(grid.aleft + 13, grid.atop) # Numbered group separator.
+        interface.pores.selected_channel.should eq(1)
+        window.click(grid.aleft + 14, grid.atop)
+        interface.pores.selected_channel.should eq(9)
+        window.click(grid.aleft + 18, grid.atop) # Beyond the partial row.
+        interface.pores.selected_channel.should eq(9)
+        window.press(Tput::Key::Home)
         window.press(Tput::Key::Right)
         window.repaint
         (Crysterm::Attr.flags(row[grid.aleft + 5].attr) & Crysterm::Attr::UNDERLINE).should eq(0)

@@ -49,9 +49,8 @@ module MinknowTui
       flow_cell = MinknowTui.text(value.flow_cell_id)
       product = MinknowTui.text(value.product_code)
       if {p.flow_cell, p.product, p.has_flow_cell, p.channels} != {flow_cell, product, value.has_flow_cell, value.channel_count}
-        p.pore_states.clear
+        p.clear_pore_snapshot
         p.state_styles.clear
-        p.pore_updated_at = nil
         p.reset_pore_layout
       end
       p.has_flow_cell = value.has_flow_cell
@@ -68,29 +67,21 @@ module MinknowTui
       seen = Set(PoreLayout::Cell).new
       native_match = screen_match = true
       records.each do |record|
-        return if record.id > channels || record.mux_records.size != layout.well_count
+        return if record.id > channels || record.mux_records.size != layout.wells_per_channel
         channel = (record.id + channel_offset).to_i
         record.mux_records.each do |mux|
-          return if mux.id > layout.well_count
+          return if mux.id > layout.wells_per_channel
           cell = PoreLayout::Cell.new(channel, mux.id + well_offset)
           return unless (point = layout.wells.point(cell)) && seen.add?(cell)
           # Accept either native chip or normalized display coordinates, but
           # only when the whole response agrees with the reference.
           coord = {mux.phys_x, mux.phys_y}
           screen_match &&= coord == {point.column, point.row}
-          native_match &&= coord == native_pore_coordinate(channels, point)
+          native_match &&= coord == layout.native_coordinates(point)
           return unless native_match || screen_match
         end
       end
       layout
-    end
-
-    private def native_pore_coordinate(channels : UInt32, point : PoreLayout::Point)
-      case channels
-      when 512 then {32 - point.row, 8 + point.column}
-      when 126 then {point.column + 1, point.row + 1}
-      else          {point.column, 99 - point.row}
-      end
     end
 
     def device(p : Position, value : MinknowApi::Device::GetDeviceInfoResponse)
@@ -458,8 +449,7 @@ module MinknowTui
           p.current_acquisition = nil
           p.runs.clear
           p.live = Metrics.new
-          p.pore_states.clear
-          p.pore_updated_at = nil
+          p.clear_pore_snapshot
           p.reset_pore_layout
           p.connected = false
           @store.reset_detail if @store.position_id == raw.name
@@ -504,9 +494,8 @@ module MinknowTui
       id = raw.end_time ? nil : raw.run_id
       if id != p.current_acquisition
         p.live = Metrics.new
-        p.pore_states.clear
+        p.clear_pore_snapshot
         p.state_styles.clear
-        p.pore_updated_at = nil
       end
       p.current_acquisition = id
       p.acquiring_signal = raw.state == MA::Acquisition::AcquisitionState::ACQUISITION_RUNNING
